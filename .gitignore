@@ -1,0 +1,39 @@
+# Binaries and build output
+/bin/
+/build/
+/dist/
+/gateway
+/my-gateway
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# Go test and coverage artifacts
+coverage.out
+coverage.html
+*.coverprofile
+*.prof
+
+# Local workspace files
+go.work
+go.work.sum
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and temporary files
+*.log
+/tmp/
+/.tmp/
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
