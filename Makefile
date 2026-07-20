@@ -1,36 +1,34 @@
-.PHONY: help build run-gateway run-service-a run-service-b fmt test clean
+.PHONY: help build dev run-gateway run-user-service run-order-service fmt test clean
 
-APP_DIR := ./bin
-GATEWAY := $(APP_DIR)/gateway
-SERVICE_A := $(APP_DIR)/serviceA
-SERVICE_B := $(APP_DIR)/serviceB
+BIN_DIR := bin
 
 help:
-	@echo "Available targets:"
-	@echo "  make build          Build gateway, serviceA, and serviceB"
-	@echo "  make run-gateway    Run the gateway service"
-	@echo "  make run-service-a  Run serviceA on port 8081"
-	@echo "  make run-service-b  Run serviceB on port 8082"
-	@echo "  make fmt            Format Go source files"
-	@echo "  make test           Run Go tests"
-	@echo "  make clean          Remove build output"
+	@echo "make build              Build all services"
+	@echo "make dev                Start the local tmux development environment"
+	@echo "make run-gateway        Run the gateway on port 8080"
+	@echo "make run-user-service   Run the user service on port 8081"
+	@echo "make run-order-service  Run the order service on port 8082"
+	@echo "make fmt                Format Go files"
+	@echo "make test               Run Go tests"
+	@echo "make clean              Remove bin/"
 
-build: $(APP_DIR)
-	go build -o $(GATEWAY) ./cmd/gateway
-	go build -o $(SERVICE_A) ./cmd/serviceA
-	go build -o $(SERVICE_B) ./cmd/serviceB
+build:
+	mkdir -p $(BIN_DIR)
+	go build -o $(BIN_DIR)/gateway ./cmd/gateway
+	go build -o $(BIN_DIR)/user_service ./cmd/user_service
+	go build -o $(BIN_DIR)/order_service ./cmd/order_service
 
-$(APP_DIR):
-	mkdir -p $(APP_DIR)
+dev:
+	./scripts/dev-tmux.sh
 
-run-gateway:
+run-gateway: 
 	go run ./cmd/gateway
 
-run-service-a:
-	go run ./cmd/serviceA
+run-user-service: 
+	go run ./cmd/user_service
 
-run-service-b:
-	go run ./cmd/serviceB
+run-order-service: 
+	go run ./cmd/order_service
 
 fmt:
 	go fmt ./...
@@ -39,4 +37,4 @@ test:
 	go test ./...
 
 clean:
-	rm -rf $(APP_DIR)
+	rm -rf $(BIN_DIR)
