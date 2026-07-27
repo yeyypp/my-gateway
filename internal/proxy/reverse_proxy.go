@@ -1,4 +1,4 @@
-package internal
+package proxy
 
 import (
 	"errors"
@@ -16,7 +16,7 @@ type RoutePolicy struct {
 
 func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http.Handler, error) {
 	if routePolicy.UpstreamURL == "" || transport == nil {
-		return nil, errors.New("invalid policy or transport") 
+		return nil, errors.New("invalid policy or transport")
 	}
 	target, err := url.Parse(routePolicy.UpstreamURL)
 	if err != nil {

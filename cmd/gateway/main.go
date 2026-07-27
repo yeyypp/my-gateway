@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
-	"shuai/gateway/internal"
+	"shuai/gateway/internal/proxy"
 	"time"
 )
 
@@ -15,8 +15,8 @@ func main() {
 		ResponseHeaderTimeout: 5 * time.Second,
 	}
 
-	userProxy, err := internal.BuildReverseProxy(
-		internal.RoutePolicy{
+	userProxy, err := proxy.BuildReverseProxy(
+		proxy.RoutePolicy{
 			UpstreamURL: "http://localhost:8081",
 		},
 		sharedTransport,
@@ -26,8 +26,8 @@ func main() {
 		return
 	}
 
-	orderProxy, err := internal.BuildReverseProxy(
-		internal.RoutePolicy{
+	orderProxy, err := proxy.BuildReverseProxy(
+		proxy.RoutePolicy{
 			UpstreamURL: "http://localhost:8082",
 		},
 		sharedTransport,

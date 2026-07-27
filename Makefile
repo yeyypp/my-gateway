@@ -15,8 +15,8 @@ help:
 build:
 	mkdir -p $(BIN_DIR)
 	go build -o $(BIN_DIR)/gateway ./cmd/gateway
-	go build -o $(BIN_DIR)/user_service ./cmd/user_service
-	go build -o $(BIN_DIR)/order_service ./cmd/order_service
+	go build -o $(BIN_DIR)/user-service ./cmd/user-service
+	go build -o $(BIN_DIR)/order-service ./cmd/order-service
 
 dev:
 	./scripts/dev-tmux.sh
@@ -25,10 +25,10 @@ run-gateway:
 	go run ./cmd/gateway
 
 run-user-service: 
-	go run ./cmd/user_service
+	go run ./cmd/user-service
 
 run-order-service: 
-	go run ./cmd/order_service
+	go run ./cmd/order-service
 
 fmt:
 	go fmt ./...
