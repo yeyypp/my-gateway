@@ -23,7 +23,6 @@ func main() {
 	)
 	if err != nil {
 		log.Fatalf("Failed to build user reverse proxy: %v", err)
-		return
 	}
 
 	orderProxy, err := proxy.BuildReverseProxy(
@@ -34,7 +33,6 @@ func main() {
 	)
 	if err != nil {
 		log.Fatalf("Failed to build order reverse proxy: %v", err)
-		return
 	}
 
 	server := &http.Server{

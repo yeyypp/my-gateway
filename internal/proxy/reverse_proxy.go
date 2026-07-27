@@ -10,8 +10,6 @@ import (
 
 type RoutePolicy struct {
 	UpstreamURL string
-	//ResponseHeaderWait time.Duration // Duration to wait for upstream response headers
-	//RequestDeadline    time.Duration // Duration to wait for the entire request to complete
 }
 
 func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http.Handler, error) {
@@ -31,11 +29,6 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		},
 
 		Transport: transport,
-
-		ModifyResponse: func(resp *http.Response) error {
-			// TODO clean up response headers if needed
-			return nil
-		},
 
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
 			log.Printf("Error proxying request to upstream %s: %v", routePolicy.UpstreamURL, err)
