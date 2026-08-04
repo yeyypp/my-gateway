@@ -24,7 +24,6 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(preq *httputil.ProxyRequest) {
 			preq.SetURL(target)
-
 			preq.SetXForwarded()
 		},
 
