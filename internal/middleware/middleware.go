@@ -1,0 +1,48 @@
+package middleware
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"log"
+	"net/http"
+	"shuai/gateway/internal/api"
+)
+
+func ValidateJSONRequest(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := r.Method
+		if method != http.MethodPost {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Limit the request body size to prevent abuse
+		limitedBody := http.MaxBytesReader(w, r.Body, 1024*1024) // Limit request body to 1MB
+		defer limitedBody.Close()
+
+		content, err := io.ReadAll(limitedBody)
+		if err != nil {
+			if _, ok := err.(*http.MaxBytesError); ok {
+				log.Printf("gateway_error category=request_too_large status=%d method=%s path=%s", http.StatusRequestEntityTooLarge, r.Method, r.URL.Path)
+				api.ResponseJSON(w, http.StatusRequestEntityTooLarge, "request body too large", nil)
+			} else {
+				log.Printf("gateway_error category=request_body_read_failed status=%d method=%s path=%s err=%v", http.StatusBadRequest, r.Method, r.URL.Path, err)
+				api.ResponseJSON(w, http.StatusBadRequest, "failed to read request body", nil)
+			}
+			return
+		}
+
+		if !json.Valid(content) {
+			log.Printf("gateway_error category=invalid_json status=%d method=%s path=%s", http.StatusBadRequest, r.Method, r.URL.Path)
+			api.ResponseJSON(w, http.StatusBadRequest, "invalid JSON format", nil)
+			return
+		}
+
+		// Replace the request body with a new ReadCloser containing the validated content
+		r.Body = io.NopCloser(bytes.NewBuffer(content))
+		r.ContentLength = int64(len(content))
+
+		next.ServeHTTP(w, r)
+	})
+}

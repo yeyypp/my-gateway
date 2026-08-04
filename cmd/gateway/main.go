@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/proxy"
 	"time"
 )
@@ -42,8 +43,8 @@ func main() {
 		IdleTimeout:  30 * time.Second,
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/user/", http.StripPrefix("/user", userProxy))
-	mux.Handle("/order/", http.StripPrefix("/order", orderProxy))
+	mux.Handle("/user/", http.StripPrefix("/user", middleware.ValidateJSONRequest(userProxy)))
+	mux.Handle("/order/", http.StripPrefix("/order", middleware.ValidateJSONRequest(orderProxy)))
 	server.Handler = mux
 	log.Println("Starting gateway server on :8080")
 	log.Fatal(server.ListenAndServe())
