@@ -42,4 +42,25 @@ Gateway :8080
 
 ## Header 的当前边界
 
-当前 Header 的主要传播和 Hop-by-hop Header 过滤由 Go 标准库 `httputil.ReverseProxy` 完成，项目代码只显式设置了目标 URL 和 `X-Forwarded-*` 信息。`Content-Type`、`Authorization`、`Host`、`User-Agent` 以及响应头的准确策略和测试属于 W1D3，尚未完成。
+### End to End header 需要传递到上游的
+- Content-Type
+- User-Agent
+- Authorization
+    - 当前学习阶段暂时透传 Authorization，W4 引入鉴权后，客户端凭证由 Gateway 消费，Provider 凭证由 Gateway 单独注入。
+- 普通用户自定义的,可以透传
+
+### Hop to Hop header 不应该传递的
+- Upgrade
+    - 不能作为普通 End-to-end Header 直接透传；协议升级需要由代理专门处理。
+- Connection以及其定义的
+- Keep-Alive
+- Proxy-Authorization 这是客户端向代理服务器进行验证的
+
+### Gateway会重新生成的
+- X-Forwarded-For、X-Forwarded-Host、X-Forwarded-Proto 由 Gateway 重新生成，不直接信任客户端传入值.
+- Host：不原样透传，由 SetURL 重写为 Upstream Host。
+
+### 响应 Header
+
+- `Content-Type`、`X-Upstream-Request-ID` 等必要响应头会返回给客户端。
+- `Connection` 及其声明的响应 Header 不会跨连接传递

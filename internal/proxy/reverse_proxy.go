@@ -31,7 +31,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		Transport: transport,
 
 		ModifyResponse: func(resp *http.Response) error {
-			method, path := "", ""
+			var method, path string
 			if resp.Request != nil {
 				method = resp.Request.Method
 				path = resp.Request.URL.Path
