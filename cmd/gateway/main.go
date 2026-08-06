@@ -43,8 +43,8 @@ func main() {
 		IdleTimeout:  30 * time.Second,
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/user/", http.StripPrefix("/user", middleware.ValidateJSONRequest(userProxy)))
-	mux.Handle("/order/", http.StripPrefix("/order", middleware.ValidateJSONRequest(orderProxy)))
+	mux.Handle("/user/", http.StripPrefix("/user", middleware.ValidateJSONRequest(middleware.RequestTimeout(300*time.Millisecond)(userProxy))))
+	mux.Handle("/order/", http.StripPrefix("/order", middleware.ValidateJSONRequest(middleware.RequestTimeout(300*time.Millisecond)(orderProxy))))
 	server.Handler = mux
 	log.Println("Starting gateway server on :8080")
 	log.Fatal(server.ListenAndServe())

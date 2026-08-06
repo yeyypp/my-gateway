@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -49,6 +50,16 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
+			if errors.Is(err, context.DeadlineExceeded) {
+				api.ResponseJSON(
+					w,
+					http.StatusGatewayTimeout,
+					"upstream_timeout",
+					nil,
+				)
+				return
+			}
+
 			log.Printf(
 				"proxy_error category=upstream_unavailable status=%d upstream=%s method=%s path=%s err=%v",
 				http.StatusBadGateway,

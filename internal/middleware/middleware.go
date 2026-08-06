@@ -2,11 +2,14 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"shuai/gateway/internal/api"
+	"time"
 )
 
 func ValidateJSONRequest(next http.Handler) http.Handler {
@@ -45,4 +48,26 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func RequestTimeout(timeout time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
+			defer cancel()
+
+			start := time.Now()
+			next.ServeHTTP(w, r.WithContext(ctx))
+			duration := time.Since(start)
+
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				log.Printf("proxy_error category=upstream_timeout status=%d method=%s path=%s duration_ms=%d",
+					http.StatusGatewayTimeout,
+					r.Method,
+					r.URL.Path,
+					duration.Milliseconds(),
+				)
+			}
+		})
+	}
 }

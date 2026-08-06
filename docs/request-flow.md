@@ -38,7 +38,7 @@ Gateway :8080
 - POST 请求体会在 JSON 校验中被 Gateway 完整读入内存，但最多读取 1 MiB；读取后必须重新放回 `r.Body` 才能继续转发。
 - 非 POST 请求不会经过上述完整读取，Body 由 ReverseProxy 继续转发。
 - 上游响应体没有被 Gateway 完整缓冲；ReverseProxy 收到响应头后，将响应体复制到下游，因此当前路径更接近流式转发。
-- ReverseProxy 基于下游请求的 Context 构造上游请求。客户端取消和 Gateway 超时能否按预期传播，将在 W1D4 和 W1D5 中用测试确认，当前不视为已经验收。
+- ReverseProxy 基于下游请求的 Context 构造上游请求。Gateway 为 user 和 order 上游请求添加 300 ms 超时，超时时取消出站请求并返回 504；客户端主动取消的传播与日志分类留待 W1D5 验收。
 
 ## Header 的当前边界
 

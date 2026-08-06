@@ -7,8 +7,10 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"shuai/gateway/internal/api"
+	"shuai/gateway/internal/middleware"
 )
 
 func TestPropagateStatusCode(t *testing.T) {
@@ -204,4 +206,63 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 	if val := resp.Header.Get("X-Response-Hop"); val != "" {
 		t.Errorf("hop-by-hop response header X-Response-Hop should not be forwarded, got %q", val)
 	}
+}
+
+func TestRequestTimeout(t *testing.T) {
+	upstreamDelay := 500 * time.Millisecond
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(upstreamDelay)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	proxy, err := BuildReverseProxy(RoutePolicy{UpstreamURL: upstream.URL}, http.DefaultTransport.(*http.Transport).Clone())
+	if err != nil {
+		t.Fatalf("failed to create proxy, err:%v\n", err)
+	}
+
+	timeoutHandler := middleware.ValidateJSONRequest(middleware.RequestTimeout(300 * time.Millisecond)(proxy))
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/process", strings.NewReader(`{"test":"test"}`))
+
+	start := time.Now()
+	timeoutHandler.ServeHTTP(recorder, req)
+	elapsed := time.Since(start)
+	if elapsed >= upstreamDelay {
+		t.Fatalf(
+			"gateway should return before upstream delay, elapsed=%v upstreamDelay=%v",
+			elapsed,
+			upstreamDelay,
+		)
+	}
+
+	resp := recorder.Result()
+	defer resp.Body.Close()
+
+	var jsonResp api.JsonResponse
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&jsonResp); err != nil {
+		t.Fatalf("failed to decode json, err:%v\n", err)
+	}
+
+	if jsonResp.Code != http.StatusGatewayTimeout {
+		t.Fatalf(
+			"expected response code %d, got %d",
+			http.StatusGatewayTimeout,
+			jsonResp.Code,
+		)
+	}
+	if jsonResp.Message != "upstream_timeout" {
+		t.Fatalf(
+			"expected response message %q, got %q",
+			"upstream_timeout",
+			jsonResp.Message,
+		)
+	}
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status code should be 504")
+	}
+
 }
