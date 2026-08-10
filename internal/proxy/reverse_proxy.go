@@ -50,7 +50,23 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
-			if errors.Is(err, context.DeadlineExceeded) {
+			switch {
+			case errors.Is(req.Context().Err(), context.Canceled):
+				log.Printf(
+					"proxy_error category=client_canceled method=%s path=%s err=%v",
+					req.Method,
+					req.URL.Path,
+					err,
+				)
+				return
+			case errors.Is(req.Context().Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded):
+				log.Printf(
+					"proxy_error category=upstream_timeout status=%d method=%s path=%s err=%v",
+					http.StatusGatewayTimeout,
+					req.Method,
+					req.URL.Path,
+					err,
+				)
 				api.ResponseJSON(
 					w,
 					http.StatusGatewayTimeout,
@@ -58,23 +74,22 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 					nil,
 				)
 				return
+			default:
+				log.Printf(
+					"proxy_error category=upstream_unavailable status=%d upstream=%s method=%s path=%s err=%v",
+					http.StatusBadGateway,
+					routePolicy.UpstreamURL,
+					req.Method,
+					req.URL.Path,
+					err,
+				)
+				api.ResponseJSON(
+					w,
+					http.StatusBadGateway,
+					"upstream unavailable",
+					nil,
+				)
 			}
-
-			log.Printf(
-				"proxy_error category=upstream_unavailable status=%d upstream=%s method=%s path=%s err=%v",
-				http.StatusBadGateway,
-				routePolicy.UpstreamURL,
-				req.Method,
-				req.URL.Path,
-				err,
-			)
-
-			api.ResponseJSON(
-				w,
-				http.StatusBadGateway,
-				"upstream unavailable",
-				nil,
-			)
 		},
 	}
 

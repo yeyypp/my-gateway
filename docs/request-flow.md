@@ -14,6 +14,22 @@ Gateway :8080
 响应沿相反方向返回：Upstream ──► Gateway ──► Downstream Client
 ```
 
+## 请求取消链路
+
+客户端断开连接后，Gateway 的 `net/http` 会取消入站请求的
+`r.Context()`。`RequestTimeout` 基于该 Context 创建的子 Context
+也会随之取消，`ReverseProxy` 使用的上游请求因此被取消。
+
+Gateway 的 `http.Transport` 随后终止上游请求。Upstream 的
+`net/http` 检测到连接关闭或请求流终止后，取消它自己创建的
+`r.Context()`。Upstream Handler 必须监听 `r.Context().Done()`，
+否则业务计算仍可能继续执行。
+
+### 客户端取消和 Gateway 超时
+
+- 客户端取消：Gateway 中的错误为 `context.Canceled`；Gateway 记录 `client_canceled`，通常不会向已经断开的客户端写响应。
+- Gateway 超时：中间件设置的 Deadline 到期，错误为 `context.DeadlineExceeded`；Gateway 取消上游请求，并向仍连接的客户端返回 504。
+
 ## 完整请求与响应时序
 
 以 `POST /user/process` 为例：
@@ -31,14 +47,17 @@ Gateway :8080
 7. Upstream Handler 处理请求并写入状态码、响应头和响应体。
 8. Gateway 收到上游响应后，`ModifyResponse` 根据最终状态码记录分类日志。
 9. `httputil.ReverseProxy` 将上游响应头、状态码和响应体复制回下游连接，并负责关闭上游响应体。
-10. 如果连接上游或读取上游响应失败，`ErrorHandler` 返回统一 JSON 格式的 502 响应。
+10. 上游请求失败时，`ErrorHandler` 根据原因处理：
+    - 客户端取消：记录 `client_canceled`，不再写错误响应；
+    - Gateway 超时：返回 504；
+    - 上游不可连接等代理错误：返回 502。
 
 ## Body 与 Context 的当前行为
 
 - POST 请求体会在 JSON 校验中被 Gateway 完整读入内存，但最多读取 1 MiB；读取后必须重新放回 `r.Body` 才能继续转发。
 - 非 POST 请求不会经过上述完整读取，Body 由 ReverseProxy 继续转发。
 - 上游响应体没有被 Gateway 完整缓冲；ReverseProxy 收到响应头后，将响应体复制到下游，因此当前路径更接近流式转发。
-- ReverseProxy 基于下游请求的 Context 构造上游请求。Gateway 为 user 和 order 上游请求添加 300 ms 超时，超时时取消出站请求并返回 504；客户端主动取消的传播与日志分类留待 W1D5 验收。
+- ReverseProxy 基于下游请求的 Context 构造上游请求。Gateway 为 user 和 order 上游请求添加 300 ms 超时，超时时取消出站请求并返回 504；客户端主动取消时，该取消会传播到上游，Gateway 将其记录为 `client_canceled`。
 
 ## Header 的当前边界
 

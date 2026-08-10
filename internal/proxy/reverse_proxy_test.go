@@ -1,11 +1,14 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -265,4 +268,57 @@ func TestRequestTimeout(t *testing.T) {
 		t.Fatalf("status code should be 504")
 	}
 
+}
+
+func TestClientCancel(t *testing.T) {
+	errChan := make(chan error, 1)
+	upstreamWorking := make(chan struct{})
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(upstreamWorking)
+		select {
+		case <-time.After(2 * time.Second):
+			w.WriteHeader(http.StatusOK)
+			errChan <- errors.New("upstream was not canceled")
+			return
+		case <-r.Context().Done():
+			errChan <- r.Context().Err()
+			return
+		}
+	}))
+	defer upstream.Close()
+
+	proxy, err := BuildReverseProxy(RoutePolicy{UpstreamURL: upstream.URL}, http.DefaultTransport.(*http.Transport).Clone())
+	if err != nil {
+		t.Fatalf("failed to create proxy, err:%v\n", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req := httptest.NewRequestWithContext(ctx, "POST", "http://test", nil)
+	recorder := httptest.NewRecorder()
+	handler := middleware.RequestTimeout(5 * time.Second)(proxy)
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		handler.ServeHTTP(recorder, req)
+	})
+
+	select {
+	case <-upstreamWorking:
+		cancel()
+	case <-time.After(time.Second):
+		t.Fatal("req did not reach upstream")
+	}
+
+	select {
+	case err := <-errChan:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err should be canceled, get:%v\n", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream did not receive cancellation")
+	}
+	wg.Wait()
 }
