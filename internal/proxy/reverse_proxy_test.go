@@ -16,6 +16,22 @@ import (
 	"shuai/gateway/internal/middleware"
 )
 
+func newTestProxy(t *testing.T, upstreamURL string) http.Handler {
+	t.Helper()
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	t.Cleanup(transport.CloseIdleConnections)
+
+	proxy, err := BuildReverseProxy(
+		RoutePolicy{UpstreamURL: upstreamURL},
+		transport,
+	)
+	if err != nil {
+		t.Fatalf("failed to create proxy: %v", err)
+	}
+	return proxy
+}
+
 func TestPropagateStatusCode(t *testing.T) {
 	testCases := []struct {
 		name       string
@@ -42,10 +58,7 @@ func TestPropagateStatusCode(t *testing.T) {
 			}))
 			defer upstream.Close()
 
-			proxy, err := BuildReverseProxy(RoutePolicy{UpstreamURL: upstream.URL}, http.DefaultTransport.(*http.Transport).Clone())
-			if err != nil {
-				t.Fatalf("failed to build reverse proxy: %v", err)
-			}
+			proxy := newTestProxy(t, upstream.URL)
 
 			gateway := httptest.NewServer(proxy)
 			defer gateway.Close()
@@ -68,10 +81,7 @@ func TestUpstreamUnavailable(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	proxy, err := BuildReverseProxy(RoutePolicy{UpstreamURL: upstream.URL}, http.DefaultTransport.(*http.Transport).Clone())
-	if err != nil {
-		t.Fatalf("failed to build reverse proxy: %v", err)
-	}
+	proxy := newTestProxy(t, upstream.URL)
 
 	upstream.Close() // Close the upstream server to simulate unavailability
 
@@ -88,7 +98,7 @@ func TestUpstreamUnavailable(t *testing.T) {
 		t.Errorf("expected status code %d, got %d", http.StatusBadGateway, resp.StatusCode)
 	}
 
-	var respJson api.JsonResponse
+	var respJson api.JSONResponse
 	if err := json.NewDecoder(resp.Body).Decode(&respJson); err != nil {
 		t.Fatalf("failed to decode response body: %v", err)
 	}
@@ -145,13 +155,7 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 		t.Fatalf("failed to parse upstream URL: %v", err)
 	}
 
-	proxy, err := BuildReverseProxy(
-		RoutePolicy{UpstreamURL: upstream.URL},
-		http.DefaultTransport.(*http.Transport).Clone(),
-	)
-	if err != nil {
-		t.Fatalf("failed to build reverse proxy: %v", err)
-	}
+	proxy := newTestProxy(t, upstream.URL)
 
 	req := httptest.NewRequest(http.MethodPost, "http://gateway.example/process", strings.NewReader(`{"mode":"ok"}`))
 	req.Header.Set("Connection", "X-Debug-Hop")
@@ -220,10 +224,7 @@ func TestRequestTimeout(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy, err := BuildReverseProxy(RoutePolicy{UpstreamURL: upstream.URL}, http.DefaultTransport.(*http.Transport).Clone())
-	if err != nil {
-		t.Fatalf("failed to create proxy, err:%v\n", err)
-	}
+	proxy := newTestProxy(t, upstream.URL)
 
 	timeoutHandler := middleware.ValidateJSONRequest(middleware.RequestTimeout(300 * time.Millisecond)(proxy))
 
@@ -244,7 +245,7 @@ func TestRequestTimeout(t *testing.T) {
 	resp := recorder.Result()
 	defer resp.Body.Close()
 
-	var jsonResp api.JsonResponse
+	var jsonResp api.JSONResponse
 	decoder := json.NewDecoder(resp.Body)
 	if err := decoder.Decode(&jsonResp); err != nil {
 		t.Fatalf("failed to decode json, err:%v\n", err)
@@ -288,10 +289,7 @@ func TestClientCancel(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy, err := BuildReverseProxy(RoutePolicy{UpstreamURL: upstream.URL}, http.DefaultTransport.(*http.Transport).Clone())
-	if err != nil {
-		t.Fatalf("failed to create proxy, err:%v\n", err)
-	}
+	proxy := newTestProxy(t, upstream.URL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -321,4 +319,46 @@ func TestClientCancel(t *testing.T) {
 		t.Fatal("upstream did not receive cancellation")
 	}
 	wg.Wait()
+}
+
+func TestInvalidJSON(t *testing.T) {
+	errChan := make(chan error, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		errChan <- errors.New("req should not reach upstream")
+	}))
+	defer upstream.Close()
+
+	proxy := newTestProxy(t, upstream.URL)
+
+	handler := middleware.ValidateJSONRequest(proxy)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "http://test", strings.NewReader("{'mode"))
+	handler.ServeHTTP(recorder, req)
+	result := recorder.Result()
+	defer result.Body.Close()
+
+	select {
+	case err := <-errChan:
+		t.Fatal(err)
+	default:
+	}
+
+	var jsonResp api.JSONResponse
+	decoder := json.NewDecoder(result.Body)
+	if err := decoder.Decode(&jsonResp); err != nil {
+		t.Fatalf("failed to decode json, err:%v\n", err)
+	}
+
+	if result.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected status code %d, got %d", http.StatusBadRequest, result.StatusCode)
+	}
+	if jsonResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected response code %d, got %d", http.StatusBadRequest, jsonResp.Code)
+	}
+	if jsonResp.Message != "invalid JSON format" {
+		t.Fatalf("expected response message %q, got %q", "invalid JSON format", jsonResp.Message)
+	}
+	if got := result.Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected Content-Type %q, got %q", "application/json", got)
+	}
 }

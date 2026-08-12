@@ -41,13 +41,14 @@ Gateway 的 `http.Transport` 随后终止上游请求。Upstream 的
    - 用 `io.ReadAll` 完整读取请求体并检查它是否是合法 JSON；
    - 校验失败时直接向下游返回 400 或 413，不再访问上游；
    - 校验成功后重新构造 `r.Body`，因为原请求体已经被读取完毕。
-4. `proxy.BuildReverseProxy` 创建的 `httputil.ReverseProxy` 接收请求，并基于入站请求构造上游请求。
-5. `Rewrite` 调用 `SetURL`，将目标地址改为对应的固定 Upstream；调用 `SetXForwarded`，补充转发来源信息。
-6. 共享的 `http.Transport` 建立或复用到 Upstream 的连接，将请求发送到 `:8081` 或 `:8082`。
-7. Upstream Handler 处理请求并写入状态码、响应头和响应体。
-8. Gateway 收到上游响应后，`ModifyResponse` 根据最终状态码记录分类日志。
-9. `httputil.ReverseProxy` 将上游响应头、状态码和响应体复制回下游连接，并负责关闭上游响应体。
-10. 上游请求失败时，`ErrorHandler` 根据原因处理：
+4. `middleware.RequestTimeout` 基于当前请求 Context 创建带 300 ms Deadline 的子 Context。客户端取消会从父 Context 传播；Deadline 到期则取消上游请求。该超时从进入 `RequestTimeout` 时开始，不包含前面的 JSON Body 读取与校验；Body 读取仍受 `http.Server.ReadTimeout` 和 1 MiB 上限约束。
+5. `proxy.BuildReverseProxy` 创建的 `httputil.ReverseProxy` 接收请求，并基于入站请求构造上游请求。
+6. `Rewrite` 调用 `SetURL`，将目标地址改为对应的固定 Upstream；调用 `SetXForwarded`，补充转发来源信息。
+7. 共享的 `http.Transport` 建立或复用到 Upstream 的连接，将请求发送到 `:8081` 或 `:8082`。
+8. Upstream Handler 处理请求并写入状态码、响应头和响应体。
+9. Gateway 收到上游响应后，`ModifyResponse` 根据最终状态码记录分类日志。
+10. `httputil.ReverseProxy` 将上游响应头、状态码和响应体复制回下游连接，并负责关闭上游响应体。
+11. 上游请求失败时，`ErrorHandler` 根据原因处理：
     - 客户端取消：记录 `client_canceled`，不再写错误响应；
     - Gateway 超时：返回 504；
     - 上游不可连接等代理错误：返回 502。

@@ -5,15 +5,16 @@
 
 ## 网关错误码总结
 ### 客户端请求与拦截
-- 400 Bad Request：判定客户端请求错误
-- 401 Unauthorized：未授权
-- 403 Forbidden：无权限
-- 413 Content Too Large：JSON 请求体太大
+- 400 Bad Request：非法 JSON 等客户端请求错误由 Gateway 拒绝，不访问上游。
+- 401 Unauthorized：未授权，第 1 周尚未实现。
+- 403 Forbidden：无权限，第 1 周尚未实现。
+- 413 Content Too Large：JSON 请求体超过 1 MiB，由 Gateway 拒绝，不访问上游。
 
 ### 网关与上游服务异常
-- 500 Internal Server Error：上游或者 Gateway 服务故障，需要再细化
-- 502 Bad Gateway：上游服务可能挂了
-- 504 Gateway Timeout：上游服务超时
+- 上游返回 400 或 500：说明 Upstream 已收到并处理请求，Gateway 原样传递业务状态码。
+- 502 Bad Gateway：Gateway 尝试代理，但未成功连接上游，例如上游未启动。
+- 504 Gateway Timeout：请求已经到达上游，但超过 Gateway 的 300 ms Deadline，Gateway 取消上游请求。
+- 客户端主动取消：Gateway 不再尝试向已断开的客户端写响应，并将取消传播给 Upstream；Upstream 应监听 Context 并停止工作。
 
 ## 请求超时
 gateway在给请求设定超时时，需要在原req的context上，比如
@@ -58,3 +59,8 @@ Upstream 的 net/http 可能观察到连接/流被取消
     ↓
 Upstream 的 r.Context() 被取消
 ```
+### `Handler.ServeHTTP` 是同步的
+
+直接调用 `handler.ServeHTTP(w, r)` 时，当前 Goroutine 会同步执行整个
+Handler 链，直到请求处理完成后才返回。它不会自动启动新的 Goroutine；
+只有 Handler 自身显式启动异步任务时，才会产生额外的并发执行。

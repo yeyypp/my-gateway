@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-type JsonResponse struct {
+type JSONResponse struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
@@ -14,7 +14,7 @@ type JsonResponse struct {
 func ResponseJSON(w http.ResponseWriter, code int, message string, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	resp := JsonResponse{
+	resp := JSONResponse{
 		Code:    code,
 		Message: message,
 		Data:    data,
