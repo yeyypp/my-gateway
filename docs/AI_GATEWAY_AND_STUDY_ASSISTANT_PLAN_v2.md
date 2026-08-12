@@ -324,7 +324,7 @@ docs(streaming): explain cancellation flow
 .
 ├── cmd/
 │   ├── gateway/
-│   ├── mockserver/
+│   ├── mock-upstream/
 │   └── study-assistant/
 ├── internal/
 │   ├── proxy/
@@ -360,7 +360,7 @@ docs(streaming): explain cancellation flow
 | 周次 | 主题 | 核心产物 |
 |---|---|---|
 | 第 1 周 | HTTP 请求生命周期 | 正确的固定上游代理、超时、取消、基础测试 |
-| 第 2 周 | 路由、配置与最小应用 | 多上游、模型路由、结构化日志、Study Assistant CLI |
+| 第 2 周 | 最小模型协议、路由与应用 | Chat Completions 风格 Mock、多上游、模型路由、结构化日志、Study Assistant CLI |
 | 第 3 周 | SSE 与早期真实模型 | 流式代理、应用流式输出、取消传播、最小真实模型接入 |
 | 第 4 周 | 鉴权与流量控制 | API Key、Middleware、并发限制、按调用方限流 |
 | 第 5 周 | 稳定性治理 | Timeout、Retry、Fallback、熔断和应用故障实验 |
@@ -368,7 +368,7 @@ docs(streaming): explain cancellation flow
 | 第 7 周 | 工程化 | Gateway 与应用的 Docker Compose、测试和 GitHub Actions |
 | 第 8 周 | 应用与管理平台 | 分析页面、请求历史、Admin API、MySQL、React + TypeScript |
 | 第 9 周 | Kubernetes 与分布式状态 | 多副本、Probe、Redis 全局限流；HPA 为选做 |
-| 第 10 周 | 模型服务平台化 | OpenAI API、模型注册、真实模型、Token、成本和路由 |
+| 第 10 周 | 模型服务平台化 | OpenAI-Compatible 兼容性加固、模型注册、Token、成本和路由 |
 | 第 11 周 | 真实使用闭环与求职交付 | 20 次真实任务、问题迭代、README、Demo、简历和面试材料 |
 | 第 12 周 | 开源贡献与专项强化 | 完成一个真实 Issue / PR 尝试，并对比成熟项目架构 |
 
@@ -587,69 +587,92 @@ docs(streaming): explain cancellation flow
 
 ---
 
-# 9. 第 2 周：多上游与路由
+# 9. 第 2 周：最小模型协议、多上游与路由
 
 ## 本周目标
 
-从固定代理演进为能够根据模型选择上游的 Gateway，并增加第一个真实调用方：`study-assistant` 命令行应用。应用第一版只读取文本、调用 Gateway 并输出结果。
+从普通 HTTP 固定代理演进为能够接收最小 Chat Completions 风格请求、根据逻辑模型选择上游的 AI Gateway，并增加第一个真实调用方：`study-assistant` 命令行应用。
+
+本周选择 `POST /v1/chat/completions` 作为教学协议，原因是它在模型服务与 Gateway 生态中仍具有广泛兼容性。只实现项目当前需要的最小共同子集，不宣称完整 OpenAI API 兼容：
+
+- 请求只要求 `model`、文本类型的 `messages[].role/content` 和 `stream`；
+- 第 2 周只支持非流式，即 `stream` 缺失或为 `false`；
+- 响应采用 `chat.completion` 的核心结构；
+- 4xx 错误采用最小 `error.message/type/param/code` 结构；
+- Mock `usage` 仅用于熟悉字段，不代表真实 Token 计算；
+- Tools、多模态、结构化输出和完整可选参数暂不实现；
+- 第 3 周在同一接口上增加流式 chunk；第 10 周再做兼容矩阵、标准客户端验证和 Provider 差异治理。
+
+OpenAI 官方目前建议新应用优先考虑 Responses API；本项目此阶段优先学习多 Provider Gateway 的兼容层，因此 `/v1/responses` 不作为当前主线门禁，只有真实应用或目标上游出现需求时再增加。
 
 ---
 
-## [ ] 第 1 天：引入两个 Mock Upstream
+## [ ] 第 1 天：两个 Chat Completions 风格 Mock Upstream
 
 ### 具体任务
 
-- 启动 Mock A 和 Mock B；
-- 响应中标明由哪个 Mock 处理；
-- 定义最小 `Upstream` 数据结构；
-- 不提前设计复杂接口。
+- 新增一个可配置名称、监听地址和模型标识的 `mock-upstream` 程序，用同一份代码启动 Mock A 和 Mock B；
+- 两个 Mock 都提供 `POST /v1/chat/completions`；
+- 定义最小请求结构：`model`、`messages`、`stream`；消息先只支持字符串 `content`；
+- 第 2 周遇到 `stream: true` 时返回明确的“不支持”错误，流式实现留到第 3 周；
+- 定义最小非流式响应结构：`id`、`object`、`created`、`model`、`choices[].message`、`finish_reason` 和 Mock `usage`；
+- 响应正文和 `X-Mock-Upstream` Header 都能标明由哪个 Mock 处理；
+- 定义最小 `Upstream` 数据结构，只包含当前需要的名称和 Base URL，不提前加入权重、价格、重试或熔断字段；
+- 保留第 1 周的普通服务作为历史学习代码，但后续 AI Gateway 主链路改用 Mock A/B。
 
 ### 验收标准
 
-- 两个服务可独立启动和停止；
-- 可通过直连确认响应来源；
-- Gateway 暂时仍只使用一个固定上游。
+- 两个 Mock 可使用不同参数独立启动和停止；
+- 使用相同的 Chat Completions 风格请求直连两个 Mock，响应结构一致且来源可区分；
+- 非法 JSON、缺少 `model`、空 `messages` 和 `stream: true` 返回稳定的 4xx JSON 错误，并使用最小 `error.message/type/param/code` 结构；
+- 有 Handler 自动化测试覆盖正常请求和至少一个非法请求；
+- Gateway 暂时仍固定使用一个 Mock，不在第 1 天实现模型路由。
 
 ---
 
-## [ ] 第 2 天：基于模型的静态路由
+## [ ] 第 2 天：基于逻辑模型的静态路由
 
 ### 具体任务
 
-- 请求增加 `model` 字段；
-- `model-a` 转发到 Mock A；
-- `model-b` 转发到 Mock B；
-- 未知模型返回明确的 400 或 404；
-- 日志记录模型和选中的 Upstream。
+- Gateway 对外提供 `POST /v1/chat/completions`；
+- 从请求的 `model` 字段选择 Upstream；
+- `model-a` 转发到 Mock A，`model-b` 转发到 Mock B；
+- 保持请求和非流式响应的 Chat Completions 核心结构，不创建临时私有业务协议；
+- 未知模型返回稳定的 400 JSON 错误，并在最小错误对象中明确 `model` 是错误参数；
+- 日志记录逻辑模型和选中的 Upstream；
+- 当前不做正式的逻辑模型到 Provider 模型名重写，该能力留到第 10 周模型注册表。
 
 ### 验收标准
 
-- 两种模型稳定进入不同上游；
+- 两种逻辑模型稳定进入不同 Mock；
+- 响应可以通过 Header 或内容确认真实处理它的 Mock；
 - 路由判断不散落在多个 Handler 中；
-- 有模型路由单元测试。
+- 有模型路由、未知模型和请求 Body 可继续转发的自动化测试。
 
 ---
 
-## [ ] 第 3 天：配置文件
+## [ ] 第 3 天：Upstream 与模型映射配置
 
 ### 具体任务
 
-- 将 Upstream 地址和模型映射移入 YAML 或 JSON；
+- 将 Upstream 名称、Base URL 和逻辑模型映射移入 YAML 或 JSON；
 - 启动时加载和校验配置；
 - 配置错误时快速失败；
-- 不做动态热更新。
+- 不做动态热更新；
+- 暂不加入 Provider 密钥和正式模型注册字段。
 
 ### 需要理解
 
 - 代码与配置分离；
+- 逻辑模型与 Upstream 的区别；
 - 启动期校验；
 - 默认值与必填项。
 
 ### 验收标准
 
-- 修改配置即可改变路由；
-- 非法地址、重复模型、缺失上游能被发现；
-- 有配置解析测试。
+- 修改配置即可改变 `model-a` / `model-b` 的 Upstream；
+- 非法 URL、重复逻辑模型、未知 Upstream 和缺失必填项能被发现；
+- 有配置解析和校验测试。
 
 ---
 
@@ -657,21 +680,27 @@ docs(streaming): explain cancellation flow
 
 ### 具体任务
 
-- 接受客户端传入的 Request ID，缺失时自动生成；
-- 将 Request ID 传给上游；
+- 接受可选的 `X-Client-Request-Id`，由调用方提供关联 ID；
+- Gateway 为每次下游请求生成并返回 `X-Request-Id`；
+- Gateway 使用独立的 `X-Gateway-Request-Id` 将内部关联 ID 传给 Mock，避免把 Gateway 生成的 ID 与未来真实 Provider 自己返回的 `X-Request-Id` 混为一谈；
 - 日志统一包含：
   - request_id
+  - client_request_id（存在时）
+  - upstream_request_id（上游返回时）
   - method
   - path
   - model
   - upstream
   - status
   - latency
-- 避免继续使用零散 `fmt.Println`。
+- 避免继续使用零散 `fmt.Println`；
+- 不记录完整 Authorization 等敏感 Header。
 
 ### 验收标准
 
-- 一次请求的 Gateway 与 Mock 日志可通过 ID 关联；
+- 一次请求的 Gateway 与 Mock 日志可通过 Gateway Request ID 关联；
+- 客户端可以从响应 Header 取得 Gateway Request ID；
+- 上游返回自己的 Request ID 时，Gateway 单独记录而不覆盖内部关联 ID；
 - 日志字段稳定；
 - 敏感 Header 不进入日志。
 
@@ -683,13 +712,14 @@ docs(streaming): explain cancellation flow
 
 - 提供 `/healthz` 表示 Gateway 进程存活；
 - 提供 `/readyz` 表示配置已经加载、关键依赖可用；
+- Mock A/B 提供最小 `/healthz`；
 - 实现主动检查 Upstream 的简单方法；
-- 明确健康检查不直接等于业务请求一定成功。
+- 明确健康检查成功不等于一次模型请求一定成功。
 
 ### 验收标准
 
-- Gateway 存活和 Upstream 健康可以分别观察；
-- 上游关闭时状态能反映；
+- Gateway 存活和 Mock Upstream 健康可以分别观察；
+- 任一 Mock 关闭时状态能反映；
 - 不因一次失败永久标记服务不可用。
 
 ---
@@ -700,26 +730,29 @@ docs(streaming): explain cancellation flow
 
 - 新增 `cmd/study-assistant`；
 - 支持读取一个 Issue、代码或文本文件；
-- 构造当前 Gateway 能接受的最小请求；
+- 构造 `model`、`messages`、`stream: false` 的 Chat Completions 风格请求；
+- 从 `choices[0].message.content` 读取并输出结果；
 - 应用禁止绕过 Gateway 直接调用 Upstream；
-- 将模型、Request ID 和最终状态输出到终端；
+- 将逻辑模型、Request ID 和最终状态输出到终端；
 - 覆盖多模型路由、未知模型、配置错误、Request ID 和健康检查测试；
-- 写 `docs/study-assistant-v0.md`，记录第一版用途和限制；
-- 使用一个真实学习任务完成首次端到端验证，即使此时上游仍是 Mock。
+- 写 `docs/study-assistant-v0.md`，记录第一版用途、协议子集和 Mock 回复的限制；
+- 使用一个真实学习任务完成首次端到端验证，即使此时答案仍由 Mock 生成。
 
 ### 验收标准
 
-- `study-assistant analyze issue.md` 能通过 Gateway 得到结果；
-- 应用代码不知道真实 Upstream 地址和密钥；
-- Gateway 日志能关联这次应用调用；
-- 至少保存一次真实任务输入、输出和主观评价；
-- 测试通过并更新架构图和路由文档。
+- `study-assistant analyze issue.md` 能通过 Gateway 得到符合最小 Chat Completions 结构的结果；
+- 应用代码只知道 Gateway Base URL 和逻辑模型，不知道真实 Upstream 地址和密钥；
+- Gateway 与 Mock 日志能关联这次应用调用；
+- 至少保存一次真实任务输入、Mock 输出和主观评价，并明确 Mock 输出不代表模型效果；
+- 测试通过并更新架构图、协议边界和路由文档。
 
 ### 本周完成标准
 
-- Gateway 已具备真正的模型路由能力；
+- Gateway 对外使用最小 Chat Completions 风格非流式协议；
+- 两个 Mock Upstream 使用相同的模型服务协议且可辨识来源；
+- Gateway 已具备真正的逻辑模型路由能力；
 - 配置不再硬编码在 Handler 中；
-- 日志可以关联整条调用链；
+- 日志可以关联 Study Assistant、Gateway 与 Mock；
 - 项目出现第一个持续使用的真实调用方，而不再只有 curl 和测试脚本。
 
 ---
@@ -727,25 +760,27 @@ docs(streaming): explain cancellation flow
 
 ## 本周目标
 
-让 Gateway 支持大模型常见的流式输出，并让 Study Assistant 在长任务中真实使用 SSE。本周后半段接入一个最小真实 OpenAI-Compatible 上游；第 10 周再正式完成标准 API、模型注册和平台治理。
+在第 2 周最小 Chat Completions 风格接口上增加 `stream: true`，让 Gateway 和 Study Assistant 使用真实的 Chat Completion chunk 语义，而不是另建一套通用 SSE 私有协议。本周后半段接入一个最小真实 OpenAI-Compatible 上游；第 10 周再完成兼容性加固、模型注册和平台治理。
 
 ---
 
-## [ ] 第 1 天：直接实现和观察 SSE Mock
+## [ ] 第 1 天：Chat Completions 流式 Mock
 
 ### 具体任务
 
-- Mock Server 提供 SSE 接口；
-- 每隔固定时间发送一个事件；
-- 最后发送结束标记；
-- 使用 `curl -N` 或其他客户端直接观察；
-- 记录 Header 和数据格式。
+- Mock A/B 在现有 `POST /v1/chat/completions` 上支持 `stream: true`；
+- 返回 `Content-Type: text/event-stream`；
+- 每个 SSE `data:` 事件包含最小 `chat.completion.chunk` 对象，通过 `choices[].delta.content` 逐步返回文本；
+- 最后发送 `data: [DONE]`；
+- 使用 `curl -N` 或其他客户端直连观察；
+- 记录普通 `chat.completion` 与流式 `chat.completion.chunk` 的结构差异。
 
 ### 验收标准
 
 - 客户端能逐块看到数据；
 - 服务端显式 Flush；
-- 能解释 SSE 与普通 JSON 响应的区别。
+- Chunk 顺序和结束标记正确；
+- 能解释 SSE 传输格式、Chat Completion chunk 语义与普通 JSON 响应的区别。
 
 ---
 
@@ -753,11 +788,12 @@ docs(streaming): explain cancellation flow
 
 ### 具体任务
 
-- Gateway 识别流式请求；
+- Gateway 能转发 `stream: true` 请求；
 - 上游每到一块数据就尽快写给客户端；
 - 每次写入后 Flush；
 - 不读取完整响应后再一次性返回；
-- 保留正确的流式响应头。
+- 保留正确的流式响应头；
+- 检查 JSON 校验、日志等中间件不会缓冲或破坏 SSE 响应。
 
 ### 验收标准
 
@@ -772,8 +808,9 @@ docs(streaming): explain cancellation flow
 ### 具体任务
 
 - 为 CLI 增加流式模式；
-- 收到第一个事件后立即打印；
-- 正确识别结束标记；
+- 解析 SSE `data:` 行和 `chat.completion.chunk`；
+- 收到 `choices[].delta.content` 后立即打印；
+- 正确识别 `[DONE]`；
 - 显示 Request ID、模型和首段等待时间；
 - 用一个较长的 Issue 分析任务验证体验。
 
@@ -794,7 +831,7 @@ docs(streaming): explain cancellation flow
 - 制造读取很慢的客户端；
 - 观察 Gateway 写阻塞、内存和 Goroutine；
 - 禁止使用无界 Channel 缓冲响应；
-- 日志区分正常结束、用户取消和上游断开。
+- 日志区分 `[DONE]` 正常结束、用户取消和上游断开。
 
 ### 验收标准
 
@@ -829,7 +866,8 @@ docs(streaming): explain cancellation flow
 ### 具体任务
 
 - 选择一个真实 OpenAI-Compatible 服务或本地轻量模型；
-- 通过当前内部适配层接入，不要求此时完成完整 OpenAI-Compatible 对外 API；
+- 复用 Gateway 已有的 `/v1/chat/completions` 最小接口，通过静态配置把一个逻辑模型路由到真实上游；
+- 只实现该 Provider 当前必需的最小字段透传或 Header 注入，不在此时建立完整模型注册表；
 - 密钥只存 Gateway，不进入 Study Assistant；
 - 使用 Study Assistant 完成至少 3 次真实任务；
 - 记录模型、TTFT、总耗时和人工评价；
@@ -840,6 +878,7 @@ docs(streaming): explain cancellation flow
 
 - 能稳定代理 SSE；
 - Study Assistant 已通过 Gateway 使用真实模型；
+- Mock 与真实模型使用同一个最小 Chat Completions 风格调用面；
 - 能说明 Flush、取消、背压、TTFT 和流式失败边界；
 - 已出现第一批真实使用记录，而不是只用 Mock 验收。
 
@@ -1596,25 +1635,27 @@ docs(streaming): explain cancellation flow
 
 ## 本周目标
 
-将前期内部适配正式演进为具备标准协议、模型注册、真实模型、Token、成本和可解释路由的模型服务平台。重点是把逻辑模型与真实 Provider 解耦，而不是自己实现推理引擎。
+将第 2～3 周已经投入使用的最小 Chat Completions 风格接口，正式演进为有兼容矩阵、标准客户端验证、模型注册、Token、成本和可解释路由的模型服务平台。重点是把逻辑模型与真实 Provider 解耦，并明确“支持的兼容子集”，而不是声称实现全部 OpenAI API 或自己实现推理引擎。
 
 ---
 
-## [ ] 第 1 天：正式 OpenAI-Compatible API
+## [ ] 第 1 天：OpenAI-Compatible 兼容性加固
 
 ### 具体任务
 
-- 提供 `/v1/chat/completions`；
-- 支持最小请求字段：`model`、`messages`、`stream`；
-- 定义兼容的成功和错误响应；
-- 迁移 Study Assistant 使用标准接口；
-- 保留旧内部接口时，明确废弃路径。
+- 审计现有 `/v1/chat/completions` 的非流式与流式行为；
+- 编写兼容矩阵，明确每个字段是支持、透传、忽略还是拒绝，禁止静默丢弃重要字段；
+- 加固成功响应、流式 chunk、错误对象、`Content-Type`、Request ID 和结束语义；
+- 使用至少一个标准 OpenAI-Compatible 客户端，通过自定义 Base URL 调用 Gateway；
+- Study Assistant 继续使用从第 2 周开始的同一标准风格接口，不再安排一次重复迁移；
+- `/v1/responses` 暂不作为硬门禁；只有真实应用或目标 Provider 需要时再增加适配，并记录与 Chat Completions 的语义差异。
 
 ### 验收标准
 
-- 标准客户端和 Study Assistant 均可调用；
+- 标准客户端和 Study Assistant 均可调用现有接口；
 - 非流式和流式均可；
 - 错误格式稳定；
+- 兼容矩阵和不支持字段的行为有测试；
 - 应用不依赖 Gateway 私有请求结构。
 
 ---
@@ -1632,7 +1673,7 @@ docs(streaming): explain cancellation flow
 - 单价；
 - 健康状态或启用状态。
 
-接入至少一个真实 OpenAI-Compatible 服务；可选本地 vLLM、SGLang 或云端兼容 API。Mock 继续用于测试。
+把第 3 周接入的真实 OpenAI-Compatible 服务纳入模型注册表；可选再增加本地 vLLM、SGLang 或第二个云端兼容 API，用于验证 Provider 差异。Mock 继续用于确定性测试。
 
 ### 验收标准
 
@@ -1722,7 +1763,7 @@ docs(streaming): explain cancellation flow
 ### 本周完成标准
 
 - 项目具备可展示的 AI Gateway 与模型平台核心功能；
-- Study Assistant 使用正式标准接口；
+- Study Assistant 和标准客户端使用经过兼容性加固的接口；
 - 可使用真实模型并追踪版本、能力、Token、成本和路由原因；
 - 能说明平台层与推理引擎层的边界。
 
@@ -2091,7 +2132,8 @@ Codex 在辅助当前任务时，建议按照以下结构回复：
 
 ## 第 2 阶段门禁：进入 SSE 前
 
-- [ ] 两个 Upstream
+- [ ] 两个可独立运行的 Chat Completions 风格 Mock Upstream
+- [ ] `/v1/chat/completions` 最小非流式请求与响应结构稳定
 - [ ] 模型路由
 - [ ] 配置校验
 - [ ] Request ID
@@ -2100,7 +2142,7 @@ Codex 在辅助当前任务时，建议按照以下结构回复：
 
 ## 第 3 阶段门禁：进入流量治理前
 
-- [ ] SSE 实时输出
+- [ ] `stream: true` 使用 Chat Completion chunk 实时输出
 - [ ] Study Assistant 能消费流式结果
 - [ ] 流式取消
 - [ ] 无界缓冲不存在
@@ -2136,7 +2178,7 @@ Codex 在辅助当前任务时，建议按照以下结构回复：
 
 ## 第 7 阶段门禁：进入求职交付前
 
-- [ ] OpenAI-Compatible API
+- [ ] OpenAI-Compatible 兼容矩阵和标准客户端验证
 - [ ] 真实模型接入
 - [ ] 最小模型注册表
 - [ ] K8s 多副本
@@ -2191,6 +2233,7 @@ Codex 在辅助当前任务时，建议按照以下结构回复：
 | 2026-07-31 | 缺少每次开始学习时可直接使用的开场指令 | 在文档开头增加“如何使用本文档”及固定指令 | 方便在新会话中快速触发进度检查和教学流程 |
 | 2026-07-31 | 教学原则强调用户实现、小步推进和不过度抽象，但未明确生产级参照 | 增加生产级教学双轨标准，并补充每日记录与回复模板 | 让学习实现可以保持适度简单，同时明确真实生产代码的完整要求、风险与演进路径 |
 | 2026-08-04 | 计划以 Gateway 技术功能和求职展示为最终目标，真实模型接入较晚，缺少用户闭环 | 增加 Study Assistant 真实应用；第 2 周建立调用方，第 3 周接入真实模型；第 8 周建设应用与管理页面；第 11 周完成 20 次真实任务和反馈驱动改进；第 12 周优先真实开源 PR | 将职业定位从单一 Gateway 扩展为大模型平台后端与 AI 应用基础设施，并补足用户、业务和价值闭环 |
+| 2026-08-12 | 第 2 周的 Mock 仍是普通后端形态，第 10 周才首次提供标准风格接口 | 第 2 周即使用最小 Chat Completions 风格 Mock 和 Gateway API；第 3 周在同一接口增加流式 chunk 并接真实模型；第 10 周改为兼容性加固、标准客户端验证和模型注册 | 让协议学习、模型路由和 Study Assistant 从一开始围绕真实 AI Gateway 调用面展开，同时避免第 10 周重复迁移和重复接入 |
 | 待填写 | 无 | 无 | 初始版本 |
 
 ---
