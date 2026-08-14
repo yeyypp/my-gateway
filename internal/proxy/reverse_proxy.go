@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"shuai/gateway/internal/api"
+	"shuai/gateway/internal/handlers"
 )
 
 type RoutePolicy struct {
@@ -67,7 +67,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 					req.URL.Path,
 					err,
 				)
-				api.ResponseJSON(
+				handlers.ResponseJSON(
 					w,
 					http.StatusGatewayTimeout,
 					"upstream_timeout",
@@ -83,7 +83,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 					req.URL.Path,
 					err,
 				)
-				api.ResponseJSON(
+				handlers.ResponseJSON(
 					w,
 					http.StatusBadGateway,
 					"upstream unavailable",

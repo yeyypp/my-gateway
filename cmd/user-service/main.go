@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"shuai/gateway/internal/api"
+	"shuai/gateway/internal/handlers"
 	"time"
 )
 
@@ -43,7 +43,7 @@ func ProcessSimpleRequest(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
-		api.ResponseJSON(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err), nil)
+		handlers.ResponseJSON(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err), nil)
 		return
 	}
 
@@ -60,12 +60,12 @@ func ProcessSimpleRequest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		api.ResponseJSON(w, http.StatusOK, "ok", nil)
+		handlers.ResponseJSON(w, http.StatusOK, "ok", nil)
 	case "bad_request":
-		api.ResponseJSON(w, http.StatusBadRequest, "upstream bad request", nil)
+		handlers.ResponseJSON(w, http.StatusBadRequest, "upstream bad request", nil)
 	case "internal_error":
-		api.ResponseJSON(w, http.StatusInternalServerError, "upstream internal server error", nil)
+		handlers.ResponseJSON(w, http.StatusInternalServerError, "upstream internal server error", nil)
 	default:
-		api.ResponseJSON(w, http.StatusBadRequest, fmt.Sprintf("unknown mode: %s", req.Mode), nil)
+		handlers.ResponseJSON(w, http.StatusBadRequest, fmt.Sprintf("unknown mode: %s", req.Mode), nil)
 	}
 }

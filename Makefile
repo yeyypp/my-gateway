@@ -17,6 +17,7 @@ build:
 	go build -o $(BIN_DIR)/gateway ./cmd/gateway
 	go build -o $(BIN_DIR)/user-service ./cmd/user-service
 	go build -o $(BIN_DIR)/order-service ./cmd/order-service
+	go build -o $(BIN_DIR)/mock-upstream ./cmd/mock-upstream
 
 dev:
 	./scripts/dev-tmux.sh
