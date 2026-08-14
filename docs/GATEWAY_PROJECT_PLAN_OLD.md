@@ -1,6 +1,6 @@
 # 【旧版】AI Gateway 求职项目实施计划
 
-> **旧版说明：** 本文件仅保留用于历史对照，不再作为当前项目路线和进度判断依据。当前计划请使用 `docs/AI_GATEWAY_AND_STUDY_ASSISTANT_PLAN_v2.md`。
+> **旧版说明：** 本文件仅保留用于历史对照，不再作为当前项目路线和进度判断依据。当前计划请使用 `docs/AI_GATEWAY_AND_STUDY_ASSISTANT_PLAN_v3.md`。
 
 > 历史用途：本文件曾作为项目路线图和 Codex 的教学与进度判断依据。  
 > 目标周期：12 周。  
