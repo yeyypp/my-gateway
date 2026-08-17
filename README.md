@@ -1,22 +1,38 @@
 # My Gateway
 
-A small Go reverse-proxy gateway project with two local upstream services.
+A small Go AI Gateway that exposes a minimal Chat Completions-style endpoint and routes logical models to local mock upstreams.
+
+## Current architecture
+
+```text
+Client
+  → POST :8080/v1/chat/completions
+  → JSON validation and request timeout
+  → ModelRouter
+      ├── model-a → ReverseProxy → Mock A :8091
+      └── model-b → ReverseProxy → Mock B :8092
+```
+
+The Gateway owns routing and upstream addresses. Clients only know the Gateway URL and logical model name.
 
 ## Project layout
 
 ```text
 cmd/
-  gateway/         Gateway process and dependency wiring
-  user-service/    Local user-service upstream
-  order-service/   Local order-service upstream
+  gateway/          Gateway process and dependency wiring
+  mock-upstream/    Parameterized Chat Completions mock
 internal/
-  proxy/           Reverse-proxy construction and policy
-scripts/           Local development helpers
+  handlers/         JSON responses and mock API handler
+  middleware/       Request validation, model extraction, and timeout
+  proxy/            Reverse-proxy construction and failure handling
+  router/           Logical model selection
+scripts/            Local development helpers
+docs/               Plans, request flow, and learning notes
 ```
 
 ## Run locally
 
-Start all three processes in a tmux session:
+Start Gateway, Mock A, and Mock B in a tmux session:
 
 ```sh
 make dev
@@ -25,22 +41,30 @@ make dev
 Or start them in separate terminals:
 
 ```sh
-make run-user-service
-make run-order-service
+make run-mock-a
+make run-mock-b
 make run-gateway
 ```
 
-The gateway listens on `:8080` and exposes:
+## Try the routes
 
-- `/user/*` → user service on `:8081`
-- `/order/*` → order service on `:8082`
-
-For example:
+Route to Mock A:
 
 ```sh
-curl http://localhost:8080/user/info
-curl http://localhost:8080/order/info
+curl http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"model-a","messages":[{"role":"user","content":"test"}]}'
 ```
+
+Route to Mock B by changing the logical model:
+
+```sh
+curl http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"model-b","messages":[{"role":"user","content":"test"}]}'
+```
+
+Unknown models return HTTP 400 with the common `{"error": ...}` response envelope.
 
 ## Verify
 
@@ -48,4 +72,6 @@ curl http://localhost:8080/order/info
 make fmt
 make test
 make build
+go test -race ./...
+go vet ./...
 ```

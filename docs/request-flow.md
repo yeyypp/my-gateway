@@ -1,86 +1,82 @@
 # Gateway 请求链路
 
-本文记录第 1 周当前实现中的实际 HTTP 请求生命周期。一次代理请求包含两段独立连接，Gateway 同时扮演 HTTP Server 和 HTTP Client：
+本文记录当前最小 AI Gateway 的实际 HTTP 请求生命周期。一次代理请求包含两段独立连接，Gateway 同时扮演 HTTP Server 和 HTTP Client：
 
 ```text
 Downstream Client
-    │  连接 1：请求 Gateway
+    │  POST /v1/chat/completions
     ▼
 Gateway :8080
-    │  连接 2：请求 Upstream
-    ├── /user/*  ──► User Service  :8081
-    └── /order/* ──► Order Service :8082
+    │
+    ├── model-a → ReverseProxy A → Mock A :8091
+    └── model-b → ReverseProxy B → Mock B :8092
 
-响应沿相反方向返回：Upstream ──► Gateway ──► Downstream Client
+响应沿相反方向返回：Mock → Gateway → Downstream Client
 ```
-
-## 请求取消链路
-
-客户端断开连接后，Gateway 的 `net/http` 会取消入站请求的
-`r.Context()`。`RequestTimeout` 基于该 Context 创建的子 Context
-也会随之取消，`ReverseProxy` 使用的上游请求因此被取消。
-
-Gateway 的 `http.Transport` 随后终止上游请求。Upstream 的
-`net/http` 检测到连接关闭或请求流终止后，取消它自己创建的
-`r.Context()`。Upstream Handler 必须监听 `r.Context().Done()`，
-否则业务计算仍可能继续执行。
-
-### 客户端取消和 Gateway 超时
-
-- 客户端取消：Gateway 中的错误为 `context.Canceled`；Gateway 记录 `client_canceled`，通常不会向已经断开的客户端写响应。
-- Gateway 超时：中间件设置的 Deadline 到期，错误为 `context.DeadlineExceeded`；Gateway 取消上游请求，并向仍连接的客户端返回 504。
 
 ## 完整请求与响应时序
 
-以 `POST /user/process` 为例：
+1. `cmd/gateway/main.go` 中的 `http.Server` 在 `:8080` 接收请求。
+2. `http.ServeMux` 将 `POST /v1/chat/completions` 交给 Gateway Handler 链。
+3. `middleware.ValidateJSONRequest` 读取请求体：
+   - 用 `http.MaxBytesReader` 将 Body 限制为 1 MiB；
+   - 拒绝非法 JSON，并使用统一 `error` envelope 返回 400；
+   - 提取逻辑 `model`，放入请求 Context；
+   - 重建 `r.Body`，保证后续 ReverseProxy 仍能读取完整请求。
+4. `middleware.RequestTimeout` 从入站 Context 派生带 5 秒 Deadline 的子 Context。客户端取消和 Gateway Deadline 都会继续传播。
+5. `router.ModelRouter` 从 Context 读取逻辑模型：
+   - `model-a` 选择 ReverseProxy A；
+   - `model-b` 选择 ReverseProxy B；
+   - 缺少或未知模型时返回稳定的 400，不访问上游。
+6. 选中的 ReverseProxy 调用 `Rewrite`，把目标地址改写为 Mock A 或 Mock B，并设置转发 Header。
+7. 共享 `http.Transport` 建立或复用上游连接，将原始 Chat Completions 请求发送到 `:8091` 或 `:8092`。
+8. Mock Handler 解码完整请求；普通请求返回一条可辨识来源的 `chat.completion`，`stream: true` 当前返回不支持错误。
+9. ReverseProxy 将上游响应状态、Header 和 Body 复制回客户端；响应 Body 不被 Gateway 完整缓冲。
+10. 代理失败时：
+    - 客户端取消：记录 `client_canceled`，不再向已断开的客户端写响应；
+    - Gateway 超时：返回 504 和统一错误对象；
+    - 上游不可连接：返回 502 和统一错误对象。
 
-1. `cmd/gateway/main.go` 中的 `http.Server` 在 `:8080` 接收下游请求。
-2. `http.ServeMux` 根据 `/user/` 匹配路由，`http.StripPrefix` 将 `/user/process` 改写为 `/process`。
-3. `middleware.ValidateJSONRequest` 处理 POST 请求体：
-   - 用 `http.MaxBytesReader` 将请求体限制为 1 MiB；
-   - 用 `io.ReadAll` 完整读取请求体并检查它是否是合法 JSON；
-   - 校验失败时直接向下游返回 400 或 413，不再访问上游；
-   - 校验成功后重新构造 `r.Body`，因为原请求体已经被读取完毕。
-4. `middleware.RequestTimeout` 基于当前请求 Context 创建带 300 ms Deadline 的子 Context。客户端取消会从父 Context 传播；Deadline 到期则取消上游请求。该超时从进入 `RequestTimeout` 时开始，不包含前面的 JSON Body 读取与校验；Body 读取仍受 `http.Server.ReadTimeout` 和 1 MiB 上限约束。
-5. `proxy.BuildReverseProxy` 创建的 `httputil.ReverseProxy` 接收请求，并基于入站请求构造上游请求。
-6. `Rewrite` 调用 `SetURL`，将目标地址改为对应的固定 Upstream；调用 `SetXForwarded`，补充转发来源信息。
-7. 共享的 `http.Transport` 建立或复用到 Upstream 的连接，将请求发送到 `:8081` 或 `:8082`。
-8. Upstream Handler 处理请求并写入状态码、响应头和响应体。
-9. Gateway 收到上游响应后，`ModifyResponse` 根据最终状态码记录分类日志。
-10. `httputil.ReverseProxy` 将上游响应头、状态码和响应体复制回下游连接，并负责关闭上游响应体。
-11. 上游请求失败时，`ErrorHandler` 根据原因处理：
-    - 客户端取消：记录 `client_canceled`，不再写错误响应；
-    - Gateway 超时：返回 504；
-    - 上游不可连接等代理错误：返回 502。
+## 组件职责
 
-## Body 与 Context 的当前行为
+```text
+ServeMux       根据 method + path 选择 Gateway Handler
+Middleware     校验 JSON、提取 model、增加超时 Context
+ModelRouter    根据逻辑 model 选择一个 http.Handler
+ReverseProxy   改写目标并正确转发 HTTP 请求与响应
+Transport      管理到上游的连接、复用和取消
+Mock Handler   理解最小 Chat Completions 协议并生成响应
+```
 
-- POST 请求体会在 JSON 校验中被 Gateway 完整读入内存，但最多读取 1 MiB；读取后必须重新放回 `r.Body` 才能继续转发。
-- 非 POST 请求不会经过上述完整读取，Body 由 ReverseProxy 继续转发。
-- 上游响应体没有被 Gateway 完整缓冲；ReverseProxy 收到响应头后，将响应体复制到下游，因此当前路径更接近流式转发。
-- ReverseProxy 基于下游请求的 Context 构造上游请求。Gateway 为 user 和 order 上游请求添加 300 ms 超时，超时时取消出站请求并返回 504；客户端主动取消时，该取消会传播到上游，Gateway 将其记录为 `client_canceled`。
+ModelRouter 持有的是 `model → http.Handler` 映射，而不是在每次请求中创建代理。ReverseProxy 和共享 Transport 都在 Gateway 启动时创建并被并发复用。
 
-## Header 的当前边界
+## Body 与 Context
 
-### End to End header 需要传递到上游的
-- Content-Type
-- User-Agent
-- Authorization
-    - 当前学习阶段暂时透传 Authorization，W4 引入鉴权后，客户端凭证由 Gateway 消费，Provider 凭证由 Gateway 单独注入。
-- 普通用户自定义的,可以透传
+- 请求 Body 是一次性流。Middleware 读取并校验后必须重建 `r.Body`，否则 ReverseProxy 只能转发 EOF。
+- `model` Context 值只在 Gateway 进程内部用于路由，不会作为 Go 对象传给 Mock。
+- ReverseProxy 使用派生后的请求 Context 创建上游请求，因此客户端取消和 Gateway Deadline 能传播到上游。
+- Mock 是另一个 HTTP Server，它根据网络连接状态获得自己的请求 Context。
 
-### Hop to Hop header 不应该传递的
-- Upgrade
-    - 不能作为普通 End-to-end Header 直接透传；协议升级需要由代理专门处理。
-- Connection以及其定义的
-- Keep-Alive
-- Proxy-Authorization 这是客户端向代理服务器进行验证的
+## Header 边界
 
-### Gateway会重新生成的
-- X-Forwarded-For、X-Forwarded-Host、X-Forwarded-Proto 由 Gateway 重新生成，不直接信任客户端传入值.
-- Host：不原样透传，由 SetURL 重写为 Upstream Host。
+### 端到端 Header
 
-### 响应 Header
+- `Content-Type`、`User-Agent` 和当前阶段的 `Authorization` 会按代理规则转发。
+- 普通自定义端到端 Header 可以透传。
 
-- `Content-Type`、`X-Upstream-Request-ID` 等必要响应头会返回给客户端。
-- `Connection` 及其声明的响应 Header 不会跨连接传递
+### Hop-by-hop Header
+
+- `Connection`、`Keep-Alive`、`Proxy-Authorization` 以及 `Connection` 声明的 Header 不跨连接传递。
+- `Upgrade` 需要专门的协议升级处理，不能作为普通 Header 透传。
+
+### Gateway 重新生成
+
+- `X-Forwarded-For`、`X-Forwarded-Host`、`X-Forwarded-Proto` 由 Gateway 设置。
+- `Host` 由 ReverseProxy 改写为选中的上游 Host。
+
+## 当前简化
+
+- 路由和端口仍硬编码，W2-M2 再配置化；
+- 当前仅支持非流式文本消息；
+- 5 秒请求超时只适合本地 Mock，接入真实模型时需要配置化；
+- Request ID、结构化链路日志和健康检查将在后续增量补齐。
