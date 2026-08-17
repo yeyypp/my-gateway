@@ -22,18 +22,30 @@ func NewMockAPIHandler(name, model string) *MockAPIHandler {
 func (m *MockAPIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var chatCompletReq chatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&chatCompletReq); err != nil {
-		SendError(w, err)
+		SendError(w, apiError{Type: "invalid_request_error", Code: "invalid_json", Message: err.Error()}, http.StatusBadRequest)
 		return
 	}
 
 	if chatCompletReq.Stream {
-		SendError(w, fmt.Errorf("not support stream"))
+		SendError(w, apiError{Type: "invalid_request_error", Message: "not support stream"}, http.StatusBadRequest)
 		return
 	}
 
 	resp := chatCompletionResponse{
+		ID:      "test id",
+		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   m.Model,
+		Choices: []chatChoice{
+			{
+				Index: 0,
+				Message: chatMessage{
+					Role:    "assistant",
+					Content: fmt.Sprintf("response from %s", m.Name),
+				},
+				FinishReason: "stop",
+			},
+		},
 	}
 	SendJSON(w, resp)
 }

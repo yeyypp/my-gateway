@@ -44,13 +44,12 @@ func SendJSON(w http.ResponseWriter, data any) {
 	}
 }
 
-func SendError(w http.ResponseWriter, err error) {
+func SendError(w http.ResponseWriter, err apiError, statusCode int) {
 	errResp := errorResponse{
-		Error: apiError{
-			Message: err.Error(),
-		},
+		Error: err,
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
 	if err := json.NewEncoder(w).Encode(errResp); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "json encoded resp error:%v", err)
