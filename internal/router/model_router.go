@@ -1,55 +1,40 @@
 package router
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"shuai/gateway/internal/handlers"
+	"shuai/gateway/internal/middleware"
 )
 
 type ModelRouter struct {
 	routes map[string]http.Handler
 }
 
-func NewModelRouter(modela, modelb http.Handler) *ModelRouter {
-	m := make(map[string]http.Handler)
-	m["model-a"] = modela
-	m["model-b"] = modelb
+func NewModelRouter(routes map[string]http.Handler) *ModelRouter {
 	return &ModelRouter{
-		routes: m,
+		routes: routes,
 	}
 }
 
 func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
+	model, ok := r.Context().Value(middleware.ModelContextKey).(string)
+	if !ok || model == "" {
 		handlers.SendError(w, handlers.APIError{
-			Message: fmt.Sprintf("read body failed, err:%s", err.Error()),
-		}, http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-
-	var selector struct {
-		Model string `json:"model"`
-	}
-	err = json.Unmarshal(body, &selector)
-	if err != nil {
-		handlers.SendError(w, handlers.APIError{
-			Message: fmt.Sprintf("invalid json, err:%s", err.Error()),
+			Message: "model is required",
+			Type:    "invalid_request_error",
+			Param:   "model",
+			Code:    "missing_required_parameter",
 		}, http.StatusBadRequest)
 		return
 	}
 
-	target, ok := m.routes[selector.Model]
+	target, ok := m.routes[model]
 	if !ok {
 		handlers.SendError(w, handlers.APIError{
-			Message: "invalid_model",
+			Message: "model is not supported",
+			Type:    "invalid_request_error",
+			Param:   "model",
+			Code:    "model_not_found",
 		}, http.StatusBadRequest)
 		return
 	}

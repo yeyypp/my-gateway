@@ -67,12 +67,11 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 					req.URL.Path,
 					err,
 				)
-				handlers.ResponseJSON(
-					w,
-					http.StatusGatewayTimeout,
-					"upstream_timeout",
-					nil,
-				)
+				handlers.SendError(w, handlers.APIError{
+					Message: "upstream timeout",
+					Type:    "gateway_error",
+					Code:    "upstream_timeout",
+				}, http.StatusGatewayTimeout)
 				return
 			default:
 				log.Printf(
@@ -83,12 +82,11 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 					req.URL.Path,
 					err,
 				)
-				handlers.ResponseJSON(
-					w,
-					http.StatusBadGateway,
-					"upstream unavailable",
-					nil,
-				)
+				handlers.SendError(w, handlers.APIError{
+					Message: "upstream unavailable",
+					Type:    "gateway_error",
+					Code:    "upstream_unavailable",
+				}, http.StatusBadGateway)
 			}
 		},
 	}

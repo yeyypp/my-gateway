@@ -37,11 +37,15 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 				log.Printf("gateway_error category=request_too_large status=%d method=%s path=%s", http.StatusRequestEntityTooLarge, r.Method, r.URL.Path)
 				handlers.SendError(w, handlers.APIError{
 					Message: "request body too large",
+					Type:    "invalid_request_error",
+					Code:    "request_too_large",
 				}, http.StatusRequestEntityTooLarge)
 			} else {
 				log.Printf("gateway_error category=request_body_read_failed status=%d method=%s path=%s err=%v", http.StatusBadRequest, r.Method, r.URL.Path, err)
 				handlers.SendError(w, handlers.APIError{
 					Message: "read request body failed",
+					Type:    "invalid_request_error",
+					Code:    "request_body_read_failed",
 				}, http.StatusBadRequest)
 			}
 			return
@@ -55,6 +59,8 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 			log.Printf("gateway_error category=invalid_json status=%d method=%s path=%s", http.StatusBadRequest, r.Method, r.URL.Path)
 			handlers.SendError(w, handlers.APIError{
 				Message: "invalid json",
+				Type:    "invalid_request_error",
+				Code:    "invalid_json",
 			}, http.StatusBadRequest)
 			return
 		}
@@ -66,7 +72,9 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		err = json.Unmarshal(content, &selector)
 		if err != nil {
 			handlers.SendError(w, handlers.APIError{
-				Message: fmt.Sprintf("invalid json, err:%s", err.Error()),
+				Message: fmt.Sprintf("invalid json: %s", err.Error()),
+				Type:    "invalid_request_error",
+				Code:    "invalid_json",
 			}, http.StatusBadRequest)
 			return
 		}

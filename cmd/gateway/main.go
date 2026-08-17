@@ -24,7 +24,7 @@ func main() {
 		sharedTransport,
 	)
 	if err != nil {
-		log.Fatalf("Failed to build user reverse proxy: %v", err)
+		log.Fatalf("Failed to build model-a proxy: %v", err)
 	}
 
 	modelB, err := proxy.BuildReverseProxy(
@@ -34,9 +34,12 @@ func main() {
 		sharedTransport,
 	)
 	if err != nil {
-		log.Fatalf("Failed to build order reverse proxy: %v", err)
+		log.Fatalf("Failed to build model-b proxy: %v", err)
 	}
-	router := router.NewModelRouter(modelA, modelB)
+	routes := make(map[string]http.Handler)
+	routes["model-a"] = modelA
+	routes["model-b"] = modelB
+	modelRouter := router.NewModelRouter(routes)
 
 	server := &http.Server{
 		Addr:         ":8080",
@@ -45,7 +48,7 @@ func main() {
 		IdleTimeout:  30 * time.Second,
 	}
 	mux := http.NewServeMux()
-	mux.Handle("POST /v1/chat/completions", middleware.ValidateJSONRequest(middleware.RequestTimeout(5*time.Second)(router)))
+	mux.Handle("POST /v1/chat/completions", middleware.ValidateJSONRequest(middleware.RequestTimeout(5*time.Second)(modelRouter)))
 	server.Handler = mux
 	log.Println("Starting gateway server on :8080")
 	log.Fatal(server.ListenAndServe())

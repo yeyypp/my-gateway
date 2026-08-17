@@ -98,17 +98,19 @@ func TestUpstreamUnavailable(t *testing.T) {
 		t.Errorf("expected status code %d, got %d", http.StatusBadGateway, resp.StatusCode)
 	}
 
-	var respJson handlers.JSONResponse
-	if err := json.NewDecoder(resp.Body).Decode(&respJson); err != nil {
+	var respJSON handlers.ErrorResponse
+	if err := json.NewDecoder(resp.Body).Decode(&respJSON); err != nil {
 		t.Fatalf("failed to decode response body: %v", err)
 	}
 
-	if respJson.Code != http.StatusBadGateway {
-		t.Errorf("expected response code %d, got %d", http.StatusBadGateway, respJson.Code)
+	if respJSON.Error.Message != "upstream unavailable" {
+		t.Errorf("expected response message %q, got %q", "upstream unavailable", respJSON.Error.Message)
 	}
-
-	if respJson.Message != "upstream unavailable" {
-		t.Errorf("expected response message 'upstream unavailable', got '%s'", respJson.Message)
+	if respJSON.Error.Type != "gateway_error" {
+		t.Errorf("expected error type %q, got %q", "gateway_error", respJSON.Error.Type)
+	}
+	if respJSON.Error.Code != "upstream_unavailable" {
+		t.Errorf("expected error code %q, got %q", "upstream_unavailable", respJSON.Error.Code)
 	}
 
 }
@@ -245,25 +247,24 @@ func TestRequestTimeout(t *testing.T) {
 	resp := recorder.Result()
 	defer resp.Body.Close()
 
-	var jsonResp handlers.JSONResponse
+	var jsonResp handlers.ErrorResponse
 	decoder := json.NewDecoder(resp.Body)
 	if err := decoder.Decode(&jsonResp); err != nil {
 		t.Fatalf("failed to decode json, err:%v\n", err)
 	}
 
-	if jsonResp.Code != http.StatusGatewayTimeout {
-		t.Fatalf(
-			"expected response code %d, got %d",
-			http.StatusGatewayTimeout,
-			jsonResp.Code,
-		)
-	}
-	if jsonResp.Message != "upstream_timeout" {
+	if jsonResp.Error.Message != "upstream timeout" {
 		t.Fatalf(
 			"expected response message %q, got %q",
-			"upstream_timeout",
-			jsonResp.Message,
+			"upstream timeout",
+			jsonResp.Error.Message,
 		)
+	}
+	if jsonResp.Error.Type != "gateway_error" {
+		t.Fatalf("expected error type %q, got %q", "gateway_error", jsonResp.Error.Type)
+	}
+	if jsonResp.Error.Code != "upstream_timeout" {
+		t.Fatalf("expected error code %q, got %q", "upstream_timeout", jsonResp.Error.Code)
 	}
 	if resp.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("status code should be 504")
@@ -343,7 +344,7 @@ func TestInvalidJSON(t *testing.T) {
 	default:
 	}
 
-	var jsonResp handlers.JSONResponse
+	var jsonResp handlers.ErrorResponse
 	decoder := json.NewDecoder(result.Body)
 	if err := decoder.Decode(&jsonResp); err != nil {
 		t.Fatalf("failed to decode json, err:%v\n", err)
@@ -352,11 +353,14 @@ func TestInvalidJSON(t *testing.T) {
 	if result.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected status code %d, got %d", http.StatusBadRequest, result.StatusCode)
 	}
-	if jsonResp.Code != http.StatusBadRequest {
-		t.Fatalf("expected response code %d, got %d", http.StatusBadRequest, jsonResp.Code)
+	if jsonResp.Error.Message != "invalid json" {
+		t.Fatalf("expected response message %q, got %q", "invalid json", jsonResp.Error.Message)
 	}
-	if jsonResp.Message != "invalid JSON format" {
-		t.Fatalf("expected response message %q, got %q", "invalid JSON format", jsonResp.Message)
+	if jsonResp.Error.Type != "invalid_request_error" {
+		t.Fatalf("expected error type %q, got %q", "invalid_request_error", jsonResp.Error.Type)
+	}
+	if jsonResp.Error.Code != "invalid_json" {
+		t.Fatalf("expected error code %q, got %q", "invalid_json", jsonResp.Error.Code)
 	}
 	if got := result.Header.Get("Content-Type"); got != "application/json" {
 		t.Fatalf("expected Content-Type %q, got %q", "application/json", got)

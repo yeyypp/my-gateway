@@ -1,8 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
+	"shuai/gateway/internal/handlers"
 )
 
 func main() {
@@ -11,5 +11,5 @@ func main() {
 }
 
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "this is service order")
+	handlers.SendJSON(w, map[string]string{"message": "this is service order"})
 }

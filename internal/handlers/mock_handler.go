@@ -27,7 +27,12 @@ func (m *MockAPIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if chatCompletReq.Stream {
-		SendError(w, APIError{Type: "invalid_request_error", Message: "not support stream"}, http.StatusBadRequest)
+		SendError(w, APIError{
+			Message: "streaming is not supported",
+			Type:    "invalid_request_error",
+			Param:   "stream",
+			Code:    "unsupported_value",
+		}, http.StatusBadRequest)
 		return
 	}
 

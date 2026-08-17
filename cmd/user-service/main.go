@@ -27,7 +27,7 @@ func main() {
 }
 
 func InfoHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "this is service user")
+	handlers.SendJSON(w, map[string]string{"message": "this is service user"})
 }
 
 func ProcessHandler(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +43,11 @@ func ProcessSimpleRequest(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
-		handlers.ResponseJSON(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err), nil)
+		handlers.SendError(w, handlers.APIError{
+			Message: fmt.Sprintf("invalid request body: %v", err),
+			Type:    "invalid_request_error",
+			Code:    "invalid_json",
+		}, http.StatusBadRequest)
 		return
 	}
 
@@ -60,12 +64,25 @@ func ProcessSimpleRequest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		handlers.ResponseJSON(w, http.StatusOK, "ok", nil)
+		handlers.SendJSON(w, map[string]string{"message": "ok"})
 	case "bad_request":
-		handlers.ResponseJSON(w, http.StatusBadRequest, "upstream bad request", nil)
+		handlers.SendError(w, handlers.APIError{
+			Message: "upstream bad request",
+			Type:    "invalid_request_error",
+			Code:    "bad_request",
+		}, http.StatusBadRequest)
 	case "internal_error":
-		handlers.ResponseJSON(w, http.StatusInternalServerError, "upstream internal server error", nil)
+		handlers.SendError(w, handlers.APIError{
+			Message: "upstream internal server error",
+			Type:    "server_error",
+			Code:    "internal_error",
+		}, http.StatusInternalServerError)
 	default:
-		handlers.ResponseJSON(w, http.StatusBadRequest, fmt.Sprintf("unknown mode: %s", req.Mode), nil)
+		handlers.SendError(w, handlers.APIError{
+			Message: fmt.Sprintf("unknown mode: %s", req.Mode),
+			Type:    "invalid_request_error",
+			Param:   "mode",
+			Code:    "unsupported_value",
+		}, http.StatusBadRequest)
 	}
 }

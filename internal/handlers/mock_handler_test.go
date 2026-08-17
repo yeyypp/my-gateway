@@ -25,7 +25,7 @@ func TestRejectsInvalidJSON(t *testing.T) {
 		t.Fatalf("expected Content-Type %q, got %q", "application/json", got)
 	}
 
-	var errResp errorResponse
+	var errResp ErrorResponse
 	if err := json.NewDecoder(result.Body).Decode(&errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}

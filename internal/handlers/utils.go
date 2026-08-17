@@ -6,26 +6,7 @@ import (
 	"net/http"
 )
 
-// for old mock service
-type JSONResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Data    any    `json:"data,omitempty"`
-}
-
-func ResponseJSON(w http.ResponseWriter, code int, message string, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	resp := JSONResponse{
-		Code:    code,
-		Message: message,
-		Data:    data,
-	}
-	json.NewEncoder(w).Encode(resp)
-}
-
-// for ai mock service
-type errorResponse struct {
+type ErrorResponse struct {
 	Error APIError `json:"error"`
 }
 
@@ -45,7 +26,7 @@ func SendJSON(w http.ResponseWriter, data any) {
 }
 
 func SendError(w http.ResponseWriter, err APIError, statusCode int) {
-	errResp := errorResponse{
+	errResp := ErrorResponse{
 		Error: err,
 	}
 	w.Header().Set("Content-Type", "application/json")
