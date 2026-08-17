@@ -26,10 +26,10 @@ func ResponseJSON(w http.ResponseWriter, code int, message string, data any) {
 
 // for ai mock service
 type errorResponse struct {
-	Error apiError `json:"error"`
+	Error APIError `json:"error"`
 }
 
-type apiError struct {
+type APIError struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
 	Param   string `json:"param"`
@@ -44,7 +44,7 @@ func SendJSON(w http.ResponseWriter, data any) {
 	}
 }
 
-func SendError(w http.ResponseWriter, err apiError, statusCode int) {
+func SendError(w http.ResponseWriter, err APIError, statusCode int) {
 	errResp := errorResponse{
 		Error: err,
 	}

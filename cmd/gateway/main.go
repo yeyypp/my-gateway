@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/proxy"
+	"shuai/gateway/internal/router"
 	"time"
 )
 
@@ -16,9 +17,9 @@ func main() {
 		ResponseHeaderTimeout: 5 * time.Second,
 	}
 
-	userProxy, err := proxy.BuildReverseProxy(
+	modelA, err := proxy.BuildReverseProxy(
 		proxy.RoutePolicy{
-			UpstreamURL: "http://localhost:8081",
+			UpstreamURL: "http://localhost:8091",
 		},
 		sharedTransport,
 	)
@@ -26,15 +27,16 @@ func main() {
 		log.Fatalf("Failed to build user reverse proxy: %v", err)
 	}
 
-	orderProxy, err := proxy.BuildReverseProxy(
+	modelB, err := proxy.BuildReverseProxy(
 		proxy.RoutePolicy{
-			UpstreamURL: "http://localhost:8082",
+			UpstreamURL: "http://localhost:8092",
 		},
 		sharedTransport,
 	)
 	if err != nil {
 		log.Fatalf("Failed to build order reverse proxy: %v", err)
 	}
+	router := router.NewModelRouter(modelA, modelB)
 
 	server := &http.Server{
 		Addr:         ":8080",
@@ -43,8 +45,7 @@ func main() {
 		IdleTimeout:  30 * time.Second,
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/user/", http.StripPrefix("/user", middleware.ValidateJSONRequest(middleware.RequestTimeout(300*time.Millisecond)(userProxy))))
-	mux.Handle("/order/", http.StripPrefix("/order", middleware.ValidateJSONRequest(middleware.RequestTimeout(300*time.Millisecond)(orderProxy))))
+	mux.Handle("POST /v1/chat/completions", middleware.ValidateJSONRequest(middleware.RequestTimeout(5*time.Second)(router)))
 	server.Handler = mux
 	log.Println("Starting gateway server on :8080")
 	log.Fatal(server.ListenAndServe())

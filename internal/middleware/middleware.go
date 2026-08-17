@@ -5,11 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"shuai/gateway/internal/handlers"
 	"time"
+)
+
+type contextKey string
+
+const (
+	ModelContextKey = contextKey("model")
 )
 
 func ValidateJSONRequest(next http.Handler) http.Handler {
@@ -28,25 +35,45 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		if err != nil {
 			if _, ok := err.(*http.MaxBytesError); ok {
 				log.Printf("gateway_error category=request_too_large status=%d method=%s path=%s", http.StatusRequestEntityTooLarge, r.Method, r.URL.Path)
-				handlers.ResponseJSON(w, http.StatusRequestEntityTooLarge, "request body too large", nil)
+				handlers.SendError(w, handlers.APIError{
+					Message: "request body too large",
+				}, http.StatusRequestEntityTooLarge)
 			} else {
 				log.Printf("gateway_error category=request_body_read_failed status=%d method=%s path=%s err=%v", http.StatusBadRequest, r.Method, r.URL.Path, err)
-				handlers.ResponseJSON(w, http.StatusBadRequest, "failed to read request body", nil)
+				handlers.SendError(w, handlers.APIError{
+					Message: "read request body failed",
+				}, http.StatusBadRequest)
 			}
 			return
 		}
 
+		// Replace the request body with a new ReadCloser containing the validated content
+		r.Body = io.NopCloser(bytes.NewReader(content))
+		r.ContentLength = int64(len(content))
+
 		if !json.Valid(content) {
 			log.Printf("gateway_error category=invalid_json status=%d method=%s path=%s", http.StatusBadRequest, r.Method, r.URL.Path)
-			handlers.ResponseJSON(w, http.StatusBadRequest, "invalid JSON format", nil)
+			handlers.SendError(w, handlers.APIError{
+				Message: "invalid json",
+			}, http.StatusBadRequest)
 			return
 		}
 
-		// Replace the request body with a new ReadCloser containing the validated content
-		r.Body = io.NopCloser(bytes.NewBuffer(content))
-		r.ContentLength = int64(len(content))
+		// check the model and save to r context
+		var selector struct {
+			Model string `json:"model"`
+		}
+		err = json.Unmarshal(content, &selector)
+		if err != nil {
+			handlers.SendError(w, handlers.APIError{
+				Message: fmt.Sprintf("invalid json, err:%s", err.Error()),
+			}, http.StatusBadRequest)
+			return
+		}
 
-		next.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), ModelContextKey, selector.Model)
+
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

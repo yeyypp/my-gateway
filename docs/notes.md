@@ -66,3 +66,54 @@ Upstream 的 r.Context() 被取消
 直接调用 `handler.ServeHTTP(w, r)` 时，当前 Goroutine 会同步执行整个
 Handler 链，直到请求处理完成后才返回。它不会自动启动新的 Goroutine；
 只有 Handler 自身显式启动异步任务时，才会产生额外的并发执行。
+
+## json相关
+这个话题非常经典，也是 Go 新手最容易混淆的地方。它们的核心区别可以用一句话概括：
+
+- **Marshal / Unmarshal**：在 **内存（变量）** 和 **字节切片（[]byte）** 之间互转（**全量**操作）。
+- **Encoder / Decoder**：在 **流（io.Reader / io.Writer）** 和 **字节流** 之间互转（**增量/流式**操作）。
+
+下面我为你详细拆解，并直接关联到你的 **AI 网关 Router** 场景中。
+
+---
+
+### 1. 核心区别（三维对比表）
+
+| 维度 | Marshal / Unmarshal | Encoder / Decoder |
+| :--- | :--- | :--- |
+| **操作对象** | `[]byte`（内存中的字节数组） | `io.Reader` / `io.Writer`（网络连接、文件、HTTP Body 流） |
+| **数据加载** | **一次性**将全部数据载入内存 | **流式**处理，边读边解，边编边写 |
+| **性能特点** | 小数据极快，大数据占用大量内存 | 大数据下内存占用极低，但可能多几次系统调用 |
+| **灵活性** | 无法处理“流式 JSON”（如数组里一直接收对象） | 可以处理流式 JSON，支持逐条解析 |
+
+---
+
+### 2. 底层原理拆解
+
+- **Marshal（编码）**：把 Go 结构体 `stu` 序列化成 JSON 格式的 `[]byte`。  
+  `json.Marshal(stu) -> []byte`
+
+- **Unmarshal（解码）**：把 JSON 格式的 `[]byte` 反序列化进 Go 结构体。  
+  `json.Unmarshal([]byte, &stu)`
+
+- **Encoder（编码）**：把 Go 结构体直接序列化并写入 `io.Writer`（比如 `http.ResponseWriter` 或文件）。  
+  `json.NewEncoder(w).Encode(stu)` —— **内部自动分块写入，不需要先生成完整的 []byte**。
+
+- **Decoder（解码）**：从 `io.Reader`（比如 `http.Request.Body`）中读取 JSON，边读边解析进 Go 结构体。  
+  `json.NewDecoder(r.Body).Decode(&stu)` —— **内部维护缓冲区，不必把整个 Body 读到内存**。
+
+### 4. 在你的 AI 网关 Router 中该怎么选？
+
+回顾你之前的伪代码：
+
+> 读取并保存请求 Body → 从 JSON 中只解析 model → 恢复 r.Body
+
+这里有**两种实现路径**，选哪一种取决于你后续是否真的需要“保存完整 Body”。
+
+
+### 6. 特别提醒：`Decoder` 的“流式”陷阱
+
+当你调用 `json.NewDecoder(r.Body).Decode(&obj)` 时，**`Decoder` 会从 `r.Body` 中消费数据**。如果解析完 `model` 后你还想把完整的 `r.Body` 传给下游，**必须提前保存**（就像你计划做的那样）。
+
+如果直接解析完就丢掉，下游就拿不到数据了。
+
