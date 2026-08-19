@@ -16,6 +16,7 @@ build:
 	mkdir -p $(BIN_DIR)
 	go build -o $(BIN_DIR)/gateway ./cmd/gateway
 	go build -o $(BIN_DIR)/mock-upstream ./cmd/mock-upstream
+	go build -o $(BIN_DIR)/study-assistant ./cmd/study-assistant
 
 dev:
 	./scripts/dev-tmux.sh

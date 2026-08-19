@@ -10,14 +10,15 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
 else
   tmux new-session -d -s "$SESSION" -n services -c "$PROJECT_DIR"
 
-  mock_a_pane="$(tmux display-message -p -t "$SESSION:services.0" '#{pane_id}')"
-  gateway_pane="$(tmux split-window -h -P -F '#{pane_id}' -t "$mock_a_pane" -c "$PROJECT_DIR")"
-  mock_b_pane="$(tmux split-window -v -P -F '#{pane_id}' -t "$mock_a_pane" -c "$PROJECT_DIR")"
+  gateway_pane="$(tmux display-message -p -t "$SESSION:services.0" '#{pane_id}')"
+  command_pane="$(tmux split-window -h -p 40 -P -F '#{pane_id}' -t "$gateway_pane" -c "$PROJECT_DIR")"
+  mock_b_pane="$(tmux split-window -v -p 33 -P -F '#{pane_id}' -t "$gateway_pane" -c "$PROJECT_DIR")"
+  mock_a_pane="$(tmux split-window -v -p 50 -P -F '#{pane_id}' -t "$gateway_pane" -c "$PROJECT_DIR")"
 
   tmux send-keys -t "$mock_a_pane" 'make run-mock-a' C-m
   tmux send-keys -t "$mock_b_pane" 'make run-mock-b' C-m
   tmux send-keys -t "$gateway_pane" 'make run-gateway' C-m
-  tmux select-layout -t "$SESSION:services" tiled
+  tmux select-pane -t "$command_pane"
 fi
 
 if [ -n "${TMUX:-}" ]; then
