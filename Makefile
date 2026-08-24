@@ -21,6 +21,9 @@ build:
 dev:
 	./scripts/dev-tmux.sh
 
+kill:
+	tmux kill-session -t ai-gateway-lab
+
 run-gateway:
 	go run ./cmd/gateway
 

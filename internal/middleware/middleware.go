@@ -66,11 +66,8 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 			return
 		}
 
-		// check the model and save to r context
-		var selector struct {
-			Model string `json:"model"`
-		}
-		err = json.Unmarshal(content, &selector)
+		var chatReq protocol.ChatCompletionRequest
+		err = json.Unmarshal(content, &chatReq)
 		if err != nil {
 			handlers.SendError(w, protocol.APIError{
 				Message: fmt.Sprintf("invalid json: %s", err.Error()),
@@ -80,7 +77,27 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), ModelContextKey, selector.Model)
+		if len(chatReq.Messages) == 0 {
+			handlers.SendError(w, protocol.APIError{
+				Message: "messages must not be empty",
+				Type:    "invalid_request_error",
+				Param:   "messages",
+				Code:    "invalid_value",
+			}, http.StatusBadRequest)
+			return
+		}
+
+		if chatReq.Stream {
+			handlers.SendError(w, protocol.APIError{
+				Message: "streaming is not supported",
+				Type:    "invalid_request_error",
+				Param:   "stream",
+				Code:    "unsupported_value",
+			}, http.StatusBadRequest)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), ModelContextKey, chatReq.Model)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
