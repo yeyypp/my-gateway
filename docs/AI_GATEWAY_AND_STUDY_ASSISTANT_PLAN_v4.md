@@ -103,9 +103,9 @@
 
 - 当前阶段：阶段 A，最小 AI Gateway
 - 当前主题：W2 模型协议、多上游与路由
-- 当前里程碑：W2-M1 最小 AI Gateway 端到端闭环
-- 状态：进行中
-- 最近代码进度更新时间：2026-08-18
+- 当前里程碑：W2-M2 配置化与首次真实模型任务
+- 状态：待开始
+- 最近代码进度更新时间：2026-08-24
 - 当前分支：master
 
 已经验证：
@@ -114,28 +114,32 @@
 - 可参数化 Mock 的正常与非法 JSON 测试；
 - Mock A/B 可通过 `make dev` 启动；
 - 静态 `ModelRouter` 的 model-a、model-b、缺失和未知模型测试；
+- Study Assistant CLI 只通过 Gateway 地址和逻辑模型完成 model-a / model-b 路由；
+- 空 `messages` 和 `stream: true` 在 Gateway 边界返回稳定的 400 错误；
 - 400、502、504 统一错误 envelope；
-- Test、Race、Vet 和 Build 通过。
+- Study Assistant → Gateway → Mock A/B 已完成手动演示；
+- 2026-08-24 重新执行 Test、Race、Vet 和 Build，全部通过。
 
 当前待完成的工作单元：
 
-1. 通过 Gateway 手动复核 model-a、model-b 和未知模型三条路由；
-2. 创建只知道 Gateway 地址和逻辑模型的极简 Study Assistant CLI；
-3. 里程碑收口时补齐空 messages 和 `stream: true` 的稳定行为验证。
+1. 实现最小配置结构、解析与校验，并用表驱动测试覆盖缺失字段、非法 URL、重复模型和未知 Upstream；
+2. 让 Gateway 启动入口通过配置构造路由，并用端到端测试证明修改配置即可切换 model-a / model-b 的上游；
+3. 确认真实云端或本地 OpenAI-Compatible 模型条件，并按条件完成真实任务或记录待补项。
 
 下一次可见成果：
 
-> 使用同一条 Study Assistant 命令切换逻辑模型，请求经过 Gateway 后稳定进入 Mock A 或 Mock B，并输出可辨识结果。
+> 不修改 Go 路由代码，只修改配置即可改变 model-a / model-b 指向的上游；非法配置会让 Gateway 启动失败并给出可理解错误。
 
-跨阶段待补项：W2-M2 时确认真实云端或本地 OpenAI-Compatible 模型条件；最晚在“可投递后端核心版”检查点前完成真实模型验证。
+当前外部条件待确认：是否具备真实云端或本地 OpenAI-Compatible 模型；最晚在“可投递后端核心版”检查点前完成真实模型验证。
 
 ## 1.2 已完成摘要
 
 - [x] W1-M1：请求链路、状态码、错误语义和 Header 行为；
 - [x] W1-M2：Context、超时、取消和资源释放；
-- [x] W1-M3：测试、重构、Race、Vet、Build 和基线复盘。
+- [x] W1-M3：测试、重构、Race、Vet、Build 和基线复盘；
+- [x] W2-M1：双 Mock、静态逻辑模型路由、Study Assistant CLI 和最小端到端闭环。
 
-W1 的逐次历史与 v2/v3 变更过程保留在 v3，不在本文件重复。
+W1 的逐次历史与 v2/v3 变更过程保留在 v3，不在本文件重复；W2-M1 的完成证据记录在对应里程碑复盘中。
 
 ---
 
@@ -323,7 +327,7 @@ Route、Upstream 和模型注册使用同一份领域语义演进：
 - 错误：`error.message`、`type`、`param`、`code`；
 - 暂不支持 Tools、多模态、结构化输出和完整可选参数。
 
-### [ ] W2-M1：最小端到端闭环
+### [x] W2-M1：最小端到端闭环
 
 可见结果：
 
@@ -338,8 +342,8 @@ study-assistant analyze issue.md --model model-a
 内部增量：
 
 - [x] M1-A：最小协议与可参数化 Mock；
-- [ ] M1-B：双 Mock 与静态路由端到端复核；
-- [ ] M1-C：Study Assistant CLI、E2E 和里程碑收口。
+- [x] M1-B：双 Mock 与静态路由端到端复核；
+- [x] M1-C：Study Assistant CLI、E2E 和里程碑收口。
 
 包含：
 
@@ -365,6 +369,16 @@ study-assistant analyze issue.md --model model-a
 - 非法 JSON、缺少 model、空 messages、未知模型和 `stream: true` 行为稳定；
 - 有 Handler、路由和 CLI 最小测试；
 - 能现场演示 Study Assistant → Gateway → Mock A/B。
+
+#### W2-M1 复盘
+
+- 可演示成果：同一条 Study Assistant 命令通过 `--model` 在 model-a 和 model-b 间切换，经 Gateway 进入不同 Mock 并输出可辨识结果；未知模型返回稳定错误；
+- 用户问题：Study Assistant 无需知道 Mock 地址或真实上游，只提交 Gateway 地址、逻辑模型和待分析文件；
+- 关键设计与数据流：CLI 构造最小 Chat Completions 请求，Gateway 在中间件校验协议边界，由 `ModelRouter` 将逻辑模型映射为上游，再由 Proxy 转发并透传响应；
+- 验证证据：model-a、model-b 和未知模型已手动复核；非法 JSON、缺少 model、空 `messages`、未知模型、`stream: true` 以及 Handler、Router、Proxy、CLI 均有相应自动化测试；2026-08-24 执行 `go test ./...`、`go test -race ./...`、`go vet ./...` 和 `go build ./...` 全部通过；
+- 当前简化与边界：路由和上游地址仍静态写在启动代码中，只接入 Mock，只支持非流式最小协议，不包含 Provider 密钥管理；
+- 对 Study Assistant 的影响：CLI 已形成真实调用入口，后续可以在不改变客户端协议的前提下替换 Gateway 后面的上游；
+- 下一步：进入 W2-M2，把 Upstream、Base URL 和逻辑模型映射配置化，并确认首次真实模型任务的外部条件。
 
 ### [ ] W2-M2：配置化与首次真实模型任务
 
