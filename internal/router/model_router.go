@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"shuai/gateway/internal/handlers"
 	"shuai/gateway/internal/middleware"
+	"shuai/gateway/internal/protocol"
 )
 
 type ModelRouter struct {
@@ -19,7 +20,7 @@ func NewModelRouter(routes map[string]http.Handler) *ModelRouter {
 func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	model, ok := r.Context().Value(middleware.ModelContextKey).(string)
 	if !ok || model == "" {
-		handlers.SendError(w, handlers.APIError{
+		handlers.SendError(w, protocol.APIError{
 			Message: "model is required",
 			Type:    "invalid_request_error",
 			Param:   "model",
@@ -30,7 +31,7 @@ func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	target, ok := m.routes[model]
 	if !ok {
-		handlers.SendError(w, handlers.APIError{
+		handlers.SendError(w, protocol.APIError{
 			Message: "model is not supported",
 			Type:    "invalid_request_error",
 			Param:   "model",

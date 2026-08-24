@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"shuai/gateway/internal/protocol"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,7 @@ func TestRejectsInvalidJSON(t *testing.T) {
 		t.Fatalf("expected Content-Type %q, got %q", "application/json", got)
 	}
 
-	var errResp ErrorResponse
+	var errResp protocol.ErrorResponse
 	if err := json.NewDecoder(result.Body).Decode(&errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
@@ -44,9 +45,9 @@ func TestRejectsInvalidJSON(t *testing.T) {
 
 func TestNormalRequest(t *testing.T) {
 	handler := NewMockAPIHandler("mock-a", "model-a")
-	chatReq := chatCompletionRequest{
+	chatReq := protocol.ChatCompletionRequest{
 		Model: "model-a",
-		Messages: []chatMessage{{
+		Messages: []protocol.Message{{
 			Role:    "user",
 			Content: "test",
 		}},
@@ -70,7 +71,7 @@ func TestNormalRequest(t *testing.T) {
 		t.Fatalf("expected Content-Type %q, got %q", "application/json", got)
 	}
 
-	var chatResp chatCompletionResponse
+	var chatResp protocol.ChatCompletionResponse
 	if err := json.NewDecoder(result.Body).Decode(&chatResp); err != nil {
 		t.Fatalf("failed to decode chat response: %v", err)
 	}

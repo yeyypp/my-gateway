@@ -4,18 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"shuai/gateway/internal/protocol"
 )
-
-type ErrorResponse struct {
-	Error APIError `json:"error"`
-}
-
-type APIError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	Param   string `json:"param"`
-	Code    string `json:"code"`
-}
 
 func SendJSON(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -25,8 +16,8 @@ func SendJSON(w http.ResponseWriter, data any) {
 	}
 }
 
-func SendError(w http.ResponseWriter, err APIError, statusCode int) {
-	errResp := ErrorResponse{
+func SendError(w http.ResponseWriter, err protocol.APIError, statusCode int) {
+	errResp := protocol.ErrorResponse{
 		Error: err,
 	}
 	w.Header().Set("Content-Type", "application/json")

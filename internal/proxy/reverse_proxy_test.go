@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"shuai/gateway/internal/handlers"
 	"shuai/gateway/internal/middleware"
+	"shuai/gateway/internal/protocol"
 )
 
 func newTestProxy(t *testing.T, upstreamURL string) http.Handler {
@@ -98,7 +98,7 @@ func TestUpstreamUnavailable(t *testing.T) {
 		t.Errorf("expected status code %d, got %d", http.StatusBadGateway, resp.StatusCode)
 	}
 
-	var respJSON handlers.ErrorResponse
+	var respJSON protocol.ErrorResponse
 	if err := json.NewDecoder(resp.Body).Decode(&respJSON); err != nil {
 		t.Fatalf("failed to decode response body: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestRequestTimeout(t *testing.T) {
 	resp := recorder.Result()
 	defer resp.Body.Close()
 
-	var jsonResp handlers.ErrorResponse
+	var jsonResp protocol.ErrorResponse
 	decoder := json.NewDecoder(resp.Body)
 	if err := decoder.Decode(&jsonResp); err != nil {
 		t.Fatalf("failed to decode json, err:%v\n", err)
@@ -344,7 +344,7 @@ func TestInvalidJSON(t *testing.T) {
 	default:
 	}
 
-	var jsonResp handlers.ErrorResponse
+	var jsonResp protocol.ErrorResponse
 	decoder := json.NewDecoder(result.Body)
 	if err := decoder.Decode(&jsonResp); err != nil {
 		t.Fatalf("failed to decode json, err:%v\n", err)

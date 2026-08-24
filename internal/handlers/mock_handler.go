@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"shuai/gateway/internal/protocol"
 	"time"
 )
 
@@ -20,14 +21,14 @@ func NewMockAPIHandler(name, model string) *MockAPIHandler {
 }
 
 func (m *MockAPIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var chatCompletReq chatCompletionRequest
+	var chatCompletReq protocol.ChatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&chatCompletReq); err != nil {
-		SendError(w, APIError{Type: "invalid_request_error", Code: "invalid_json", Message: err.Error()}, http.StatusBadRequest)
+		SendError(w, protocol.APIError{Type: "invalid_request_error", Code: "invalid_json", Message: err.Error()}, http.StatusBadRequest)
 		return
 	}
 
 	if chatCompletReq.Stream {
-		SendError(w, APIError{
+		SendError(w, protocol.APIError{
 			Message: "streaming is not supported",
 			Type:    "invalid_request_error",
 			Param:   "stream",
@@ -36,15 +37,15 @@ func (m *MockAPIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := chatCompletionResponse{
+	resp := protocol.ChatCompletionResponse{
 		ID:      "test id",
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   m.Model,
-		Choices: []chatChoice{
+		Choices: []protocol.Choice{
 			{
 				Index: 0,
-				Message: chatMessage{
+				Message: protocol.Message{
 					Role:    "assistant",
 					Content: fmt.Sprintf("response from %s", m.Name),
 				},
@@ -53,36 +54,4 @@ func (m *MockAPIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	SendJSON(w, resp)
-}
-
-type chatCompletionRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
-}
-
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type chatCompletionResponse struct {
-	ID      string       `json:"id"`
-	Object  string       `json:"object"`
-	Created int64        `json:"created"`
-	Model   string       `json:"model"`
-	Choices []chatChoice `json:"choices"`
-	Usage   usage        `json:"usage"`
-}
-
-type chatChoice struct {
-	Index        int         `json:"index"`
-	Message      chatMessage `json:"message"`
-	FinishReason string      `json:"finish_reason"`
-}
-
-type usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
 }

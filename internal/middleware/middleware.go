@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"shuai/gateway/internal/handlers"
+	"shuai/gateway/internal/protocol"
 	"time"
 )
 
@@ -35,14 +36,14 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		if err != nil {
 			if _, ok := err.(*http.MaxBytesError); ok {
 				log.Printf("gateway_error category=request_too_large status=%d method=%s path=%s", http.StatusRequestEntityTooLarge, r.Method, r.URL.Path)
-				handlers.SendError(w, handlers.APIError{
+				handlers.SendError(w, protocol.APIError{
 					Message: "request body too large",
 					Type:    "invalid_request_error",
 					Code:    "request_too_large",
 				}, http.StatusRequestEntityTooLarge)
 			} else {
 				log.Printf("gateway_error category=request_body_read_failed status=%d method=%s path=%s err=%v", http.StatusBadRequest, r.Method, r.URL.Path, err)
-				handlers.SendError(w, handlers.APIError{
+				handlers.SendError(w, protocol.APIError{
 					Message: "read request body failed",
 					Type:    "invalid_request_error",
 					Code:    "request_body_read_failed",
@@ -57,7 +58,7 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 
 		if !json.Valid(content) {
 			log.Printf("gateway_error category=invalid_json status=%d method=%s path=%s", http.StatusBadRequest, r.Method, r.URL.Path)
-			handlers.SendError(w, handlers.APIError{
+			handlers.SendError(w, protocol.APIError{
 				Message: "invalid json",
 				Type:    "invalid_request_error",
 				Code:    "invalid_json",
@@ -71,7 +72,7 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		}
 		err = json.Unmarshal(content, &selector)
 		if err != nil {
-			handlers.SendError(w, handlers.APIError{
+			handlers.SendError(w, protocol.APIError{
 				Message: fmt.Sprintf("invalid json: %s", err.Error()),
 				Type:    "invalid_request_error",
 				Code:    "invalid_json",

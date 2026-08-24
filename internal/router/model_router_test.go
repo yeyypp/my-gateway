@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"shuai/gateway/internal/handlers"
 	"shuai/gateway/internal/middleware"
+	"shuai/gateway/internal/protocol"
 )
 
 func TestModelRouterRoutesKnownModels(t *testing.T) {
@@ -50,11 +50,11 @@ func TestModelRouterRejectsInvalidModels(t *testing.T) {
 		name      string
 		model     string
 		withModel bool
-		wantError handlers.APIError
+		wantError protocol.APIError
 	}{
 		{
 			name: "missing model context",
-			wantError: handlers.APIError{
+			wantError: protocol.APIError{
 				Message: "model is required",
 				Type:    "invalid_request_error",
 				Param:   "model",
@@ -64,7 +64,7 @@ func TestModelRouterRejectsInvalidModels(t *testing.T) {
 		{
 			name:      "empty model",
 			withModel: true,
-			wantError: handlers.APIError{
+			wantError: protocol.APIError{
 				Message: "model is required",
 				Type:    "invalid_request_error",
 				Param:   "model",
@@ -75,7 +75,7 @@ func TestModelRouterRejectsInvalidModels(t *testing.T) {
 			name:      "unknown model",
 			model:     "model-unknown",
 			withModel: true,
-			wantError: handlers.APIError{
+			wantError: protocol.APIError{
 				Message: "model is not supported",
 				Type:    "invalid_request_error",
 				Param:   "model",
@@ -102,7 +102,7 @@ func TestModelRouterRejectsInvalidModels(t *testing.T) {
 				t.Fatalf("expected status code %d, got %d", http.StatusBadRequest, result.StatusCode)
 			}
 
-			var got handlers.ErrorResponse
+			var got protocol.ErrorResponse
 			decoder := json.NewDecoder(result.Body)
 			if err := decoder.Decode(&got); err != nil {
 				t.Fatalf("failed to decode error response: %v", err)
