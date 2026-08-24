@@ -106,11 +106,11 @@ func TestUpstreamUnavailable(t *testing.T) {
 	if respJSON.Error.Message != "upstream unavailable" {
 		t.Errorf("expected response message %q, got %q", "upstream unavailable", respJSON.Error.Message)
 	}
-	if respJSON.Error.Type != "gateway_error" {
-		t.Errorf("expected error type %q, got %q", "gateway_error", respJSON.Error.Type)
+	if respJSON.Error.Type != protocol.ErrorTypeGateway {
+		t.Errorf("expected error type %q, got %q", protocol.ErrorTypeGateway, respJSON.Error.Type)
 	}
-	if respJSON.Error.Code != "upstream_unavailable" {
-		t.Errorf("expected error code %q, got %q", "upstream_unavailable", respJSON.Error.Code)
+	if respJSON.Error.Code != protocol.ErrorCodeUpstreamUnavailable {
+		t.Errorf("expected error code %q, got %q", protocol.ErrorCodeUpstreamUnavailable, respJSON.Error.Code)
 	}
 
 }
@@ -231,7 +231,11 @@ func TestRequestTimeout(t *testing.T) {
 	timeoutHandler := middleware.ValidateJSONRequest(middleware.RequestTimeout(300 * time.Millisecond)(proxy))
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/process", strings.NewReader(`{"test":"test"}`))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/process",
+		strings.NewReader(`{"model":"model-a","messages":[{"role":"user","content":"test"}]}`),
+	)
 
 	start := time.Now()
 	timeoutHandler.ServeHTTP(recorder, req)
@@ -260,11 +264,11 @@ func TestRequestTimeout(t *testing.T) {
 			jsonResp.Error.Message,
 		)
 	}
-	if jsonResp.Error.Type != "gateway_error" {
-		t.Fatalf("expected error type %q, got %q", "gateway_error", jsonResp.Error.Type)
+	if jsonResp.Error.Type != protocol.ErrorTypeGateway {
+		t.Fatalf("expected error type %q, got %q", protocol.ErrorTypeGateway, jsonResp.Error.Type)
 	}
-	if jsonResp.Error.Code != "upstream_timeout" {
-		t.Fatalf("expected error code %q, got %q", "upstream_timeout", jsonResp.Error.Code)
+	if jsonResp.Error.Code != protocol.ErrorCodeUpstreamTimeout {
+		t.Fatalf("expected error code %q, got %q", protocol.ErrorCodeUpstreamTimeout, jsonResp.Error.Code)
 	}
 	if resp.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("status code should be 504")
@@ -356,11 +360,11 @@ func TestInvalidJSON(t *testing.T) {
 	if jsonResp.Error.Message != "invalid json" {
 		t.Fatalf("expected response message %q, got %q", "invalid json", jsonResp.Error.Message)
 	}
-	if jsonResp.Error.Type != "invalid_request_error" {
-		t.Fatalf("expected error type %q, got %q", "invalid_request_error", jsonResp.Error.Type)
+	if jsonResp.Error.Type != protocol.ErrorTypeInvalidRequest {
+		t.Fatalf("expected error type %q, got %q", protocol.ErrorTypeInvalidRequest, jsonResp.Error.Type)
 	}
-	if jsonResp.Error.Code != "invalid_json" {
-		t.Fatalf("expected error code %q, got %q", "invalid_json", jsonResp.Error.Code)
+	if jsonResp.Error.Code != protocol.ErrorCodeInvalidJSON {
+		t.Fatalf("expected error code %q, got %q", protocol.ErrorCodeInvalidJSON, jsonResp.Error.Code)
 	}
 	if got := result.Header.Get("Content-Type"); got != "application/json" {
 		t.Fatalf("expected Content-Type %q, got %q", "application/json", got)

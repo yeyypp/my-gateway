@@ -22,9 +22,9 @@ func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok || model == "" {
 		handlers.SendError(w, protocol.APIError{
 			Message: "model is required",
-			Type:    "invalid_request_error",
+			Type:    protocol.ErrorTypeInvalidRequest,
 			Param:   "model",
-			Code:    "missing_required_parameter",
+			Code:    protocol.ErrorCodeMissingRequiredParameter,
 		}, http.StatusBadRequest)
 		return
 	}
@@ -33,9 +33,9 @@ func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		handlers.SendError(w, protocol.APIError{
 			Message: "model is not supported",
-			Type:    "invalid_request_error",
+			Type:    protocol.ErrorTypeInvalidRequest,
 			Param:   "model",
-			Code:    "model_not_found",
+			Code:    protocol.ErrorCodeModelNotFound,
 		}, http.StatusBadRequest)
 		return
 	}

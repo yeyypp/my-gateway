@@ -56,9 +56,9 @@ func TestModelRouterRejectsInvalidModels(t *testing.T) {
 			name: "missing model context",
 			wantError: protocol.APIError{
 				Message: "model is required",
-				Type:    "invalid_request_error",
+				Type:    protocol.ErrorTypeInvalidRequest,
 				Param:   "model",
-				Code:    "missing_required_parameter",
+				Code:    protocol.ErrorCodeMissingRequiredParameter,
 			},
 		},
 		{
@@ -66,9 +66,9 @@ func TestModelRouterRejectsInvalidModels(t *testing.T) {
 			withModel: true,
 			wantError: protocol.APIError{
 				Message: "model is required",
-				Type:    "invalid_request_error",
+				Type:    protocol.ErrorTypeInvalidRequest,
 				Param:   "model",
-				Code:    "missing_required_parameter",
+				Code:    protocol.ErrorCodeMissingRequiredParameter,
 			},
 		},
 		{
@@ -77,9 +77,9 @@ func TestModelRouterRejectsInvalidModels(t *testing.T) {
 			withModel: true,
 			wantError: protocol.APIError{
 				Message: "model is not supported",
-				Type:    "invalid_request_error",
+				Type:    protocol.ErrorTypeInvalidRequest,
 				Param:   "model",
-				Code:    "model_not_found",
+				Code:    protocol.ErrorCodeModelNotFound,
 			},
 		},
 	}

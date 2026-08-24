@@ -34,11 +34,11 @@ func TestRejectsInvalidJSON(t *testing.T) {
 	if errResp.Error.Message == "" {
 		t.Fatal("expected a non-empty error message")
 	}
-	if errResp.Error.Type != "invalid_request_error" {
-		t.Fatalf("expected error type %q, got %q", "invalid_request_error", errResp.Error.Type)
+	if errResp.Error.Type != protocol.ErrorTypeInvalidRequest {
+		t.Fatalf("expected error type %q, got %q", protocol.ErrorTypeInvalidRequest, errResp.Error.Type)
 	}
-	if errResp.Error.Code != "invalid_json" {
-		t.Fatalf("expected error code %q, got %q", "invalid_json", errResp.Error.Code)
+	if errResp.Error.Code != protocol.ErrorCodeInvalidJSON {
+		t.Fatalf("expected error code %q, got %q", protocol.ErrorCodeInvalidJSON, errResp.Error.Code)
 	}
 
 }

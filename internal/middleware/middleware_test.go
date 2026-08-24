@@ -25,9 +25,9 @@ func TestValidateJSONRequestRejectsUnsupportedChatRequests(t *testing.T) {
 			}`,
 			wantError: protocol.APIError{
 				Message: "messages must not be empty",
-				Type:    "invalid_request_error",
+				Type:    protocol.ErrorTypeInvalidRequest,
 				Param:   "messages",
-				Code:    "invalid_value",
+				Code:    protocol.ErrorCodeInvalidValue,
 			},
 		},
 		{
@@ -39,9 +39,9 @@ func TestValidateJSONRequestRejectsUnsupportedChatRequests(t *testing.T) {
 			}`,
 			wantError: protocol.APIError{
 				Message: "streaming is not supported",
-				Type:    "invalid_request_error",
+				Type:    protocol.ErrorTypeInvalidRequest,
 				Param:   "stream",
-				Code:    "unsupported_value",
+				Code:    protocol.ErrorCodeUnsupportedValue,
 			},
 		},
 	}

@@ -106,9 +106,9 @@ func TestRunAnalyzeReturnsErrorForNon2xxResponse(t *testing.T) {
 		errResp := protocol.ErrorResponse{
 			Error: protocol.APIError{
 				Message: "model is not supported",
-				Type:    "invalid_request_error",
+				Type:    protocol.ErrorTypeInvalidRequest,
 				Param:   "model",
-				Code:    "model_not_found",
+				Code:    protocol.ErrorCodeModelNotFound,
 			},
 		}
 		if err := json.NewEncoder(w).Encode(errResp); err != nil {

@@ -38,15 +38,15 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 				log.Printf("gateway_error category=request_too_large status=%d method=%s path=%s", http.StatusRequestEntityTooLarge, r.Method, r.URL.Path)
 				handlers.SendError(w, protocol.APIError{
 					Message: "request body too large",
-					Type:    "invalid_request_error",
-					Code:    "request_too_large",
+					Type:    protocol.ErrorTypeInvalidRequest,
+					Code:    protocol.ErrorCodeRequestTooLarge,
 				}, http.StatusRequestEntityTooLarge)
 			} else {
 				log.Printf("gateway_error category=request_body_read_failed status=%d method=%s path=%s err=%v", http.StatusBadRequest, r.Method, r.URL.Path, err)
 				handlers.SendError(w, protocol.APIError{
 					Message: "read request body failed",
-					Type:    "invalid_request_error",
-					Code:    "request_body_read_failed",
+					Type:    protocol.ErrorTypeInvalidRequest,
+					Code:    protocol.ErrorCodeRequestBodyReadFailed,
 				}, http.StatusBadRequest)
 			}
 			return
@@ -60,8 +60,8 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 			log.Printf("gateway_error category=invalid_json status=%d method=%s path=%s", http.StatusBadRequest, r.Method, r.URL.Path)
 			handlers.SendError(w, protocol.APIError{
 				Message: "invalid json",
-				Type:    "invalid_request_error",
-				Code:    "invalid_json",
+				Type:    protocol.ErrorTypeInvalidRequest,
+				Code:    protocol.ErrorCodeInvalidJSON,
 			}, http.StatusBadRequest)
 			return
 		}
@@ -71,8 +71,8 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		if err != nil {
 			handlers.SendError(w, protocol.APIError{
 				Message: fmt.Sprintf("invalid json: %s", err.Error()),
-				Type:    "invalid_request_error",
-				Code:    "invalid_json",
+				Type:    protocol.ErrorTypeInvalidRequest,
+				Code:    protocol.ErrorCodeInvalidJSON,
 			}, http.StatusBadRequest)
 			return
 		}
@@ -80,9 +80,9 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		if len(chatReq.Messages) == 0 {
 			handlers.SendError(w, protocol.APIError{
 				Message: "messages must not be empty",
-				Type:    "invalid_request_error",
+				Type:    protocol.ErrorTypeInvalidRequest,
 				Param:   "messages",
-				Code:    "invalid_value",
+				Code:    protocol.ErrorCodeInvalidValue,
 			}, http.StatusBadRequest)
 			return
 		}
@@ -90,9 +90,9 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		if chatReq.Stream {
 			handlers.SendError(w, protocol.APIError{
 				Message: "streaming is not supported",
-				Type:    "invalid_request_error",
+				Type:    protocol.ErrorTypeInvalidRequest,
 				Param:   "stream",
-				Code:    "unsupported_value",
+				Code:    protocol.ErrorCodeUnsupportedValue,
 			}, http.StatusBadRequest)
 			return
 		}

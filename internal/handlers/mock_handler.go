@@ -23,16 +23,20 @@ func NewMockAPIHandler(name, model string) *MockAPIHandler {
 func (m *MockAPIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var chatCompletReq protocol.ChatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&chatCompletReq); err != nil {
-		SendError(w, protocol.APIError{Type: "invalid_request_error", Code: "invalid_json", Message: err.Error()}, http.StatusBadRequest)
+		SendError(w, protocol.APIError{
+			Message: err.Error(),
+			Type:    protocol.ErrorTypeInvalidRequest,
+			Code:    protocol.ErrorCodeInvalidJSON,
+		}, http.StatusBadRequest)
 		return
 	}
 
 	if chatCompletReq.Stream {
 		SendError(w, protocol.APIError{
 			Message: "streaming is not supported",
-			Type:    "invalid_request_error",
+			Type:    protocol.ErrorTypeInvalidRequest,
 			Param:   "stream",
-			Code:    "unsupported_value",
+			Code:    protocol.ErrorCodeUnsupportedValue,
 		}, http.StatusBadRequest)
 		return
 	}
