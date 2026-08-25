@@ -3,13 +3,48 @@ package main
 import (
 	"log"
 	"net/http"
+	"shuai/gateway/internal/config"
 	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/proxy"
 	"shuai/gateway/internal/router"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 func main() {
+	rootCmd := &cobra.Command{
+		Use:   "gateway start [--config] config_file",
+		Short: "gateway for ai model",
+	}
+
+	startCmd := &cobra.Command{
+		Use: "start [--config] config_file",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configFile, err := cmd.Flags().GetString("config")
+			if err != nil {
+				return err
+			}
+
+			config, err := config.Load(configFile)
+			if err != nil {
+				return err
+			}
+
+			return runGateway(config)
+		},
+	}
+
+	flags := startCmd.Flags()
+	flags.String("config", config.DefaultConfig, "config file path")
+
+	rootCmd.AddCommand(startCmd)
+	if err := rootCmd.Execute(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runGateway(config config.Config) error {
 	sharedTransport := &http.Transport{
 		MaxIdleConns:          5,
 		MaxIdleConnsPerHost:   2,
@@ -17,28 +52,24 @@ func main() {
 		ResponseHeaderTimeout: 5 * time.Second,
 	}
 
-	modelA, err := proxy.BuildReverseProxy(
-		proxy.RoutePolicy{
-			UpstreamURL: "http://localhost:8091",
-		},
-		sharedTransport,
-	)
-	if err != nil {
-		log.Fatalf("Failed to build model-a proxy: %v", err)
-	}
-
-	modelB, err := proxy.BuildReverseProxy(
-		proxy.RoutePolicy{
-			UpstreamURL: "http://localhost:8092",
-		},
-		sharedTransport,
-	)
-	if err != nil {
-		log.Fatalf("Failed to build model-b proxy: %v", err)
-	}
 	routes := make(map[string]http.Handler)
-	routes["model-a"] = modelA
-	routes["model-b"] = modelB
+	for _, upstream := range config.Upstreams {
+		proxy, err := proxy.BuildReverseProxy(
+			proxy.RoutePolicy{
+				UpstreamURL: upstream.BaseURL,
+			},
+			sharedTransport,
+		)
+		if err != nil {
+			return err
+		}
+
+		for _, model := range config.Models {
+			if model.Upstream == upstream.Name {
+				routes[model.Name] = proxy
+			}
+		}
+	}
 	modelRouter := router.NewModelRouter(routes)
 
 	server := &http.Server{
@@ -51,5 +82,5 @@ func main() {
 	mux.Handle("POST /v1/chat/completions", middleware.ValidateJSONRequest(middleware.RequestTimeout(5*time.Second)(modelRouter)))
 	server.Handler = mux
 	log.Println("Starting gateway server on :8080")
-	log.Fatal(server.ListenAndServe())
+	return server.ListenAndServe()
 }

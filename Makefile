@@ -25,7 +25,7 @@ kill:
 	tmux kill-session -t ai-gateway-lab
 
 run-gateway:
-	go run ./cmd/gateway
+	go run ./cmd/gateway start
 
 run-mock-a:
 	go run ./cmd/mock-upstream -name mock-a -model model-a -addr :8091

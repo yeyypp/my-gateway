@@ -1,0 +1,11 @@
+upstreams:
+  - name: mock-a
+    base_url: http://localhost:8091
+  - name: mock-b
+    base_url: http://localhost:8092
+
+models:
+  - name: model-a
+    upstream: mock-a
+  - name: model-b
+    upstream: mock-b
