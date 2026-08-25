@@ -48,21 +48,21 @@ func Load(configFile string) (Config, error) {
 func validateConfig(config Config) error {
 	// validate upstream
 	if len(config.Upstreams) == 0 {
-		return fmt.Errorf("empty upstreams")
+		return fmt.Errorf("at least one upstream is required")
 	}
 	exists := make(map[string]struct{})
-	for _, upstream := range config.Upstreams {
+	for index, upstream := range config.Upstreams {
+		if len(upstream.Name) == 0 {
+			return fmt.Errorf("upstream at index %d has empty name", index)
+		}
 		if _, ok := exists[upstream.Name]; ok {
-			return fmt.Errorf("replicate upstream name")
+			return fmt.Errorf("duplicate upstream name %q", upstream.Name)
 		}
 		if len(upstream.BaseURL) == 0 {
-			return fmt.Errorf("empty upstream base url")
+			return fmt.Errorf("upstream %q has empty base URL", upstream.Name)
 		}
 		if err := validateBaseURL(upstream.BaseURL); err != nil {
-			return err
-		}
-		if len(upstream.Name) == 0 {
-			return fmt.Errorf("empty upstream name")
+			return fmt.Errorf("upstream %q: %w", upstream.Name, err)
 		}
 
 		exists[upstream.Name] = struct{}{}
@@ -70,18 +70,21 @@ func validateConfig(config Config) error {
 
 	// validate models
 	if len(config.Models) == 0 {
-		return fmt.Errorf("empty models")
+		return fmt.Errorf("at least one model is required")
 	}
 	existsM := make(map[string]struct{})
-	for _, model := range config.Models {
+	for index, model := range config.Models {
 		if len(model.Name) == 0 {
-			return fmt.Errorf("empty model name")
+			return fmt.Errorf("model at index %d has empty name", index)
 		}
 		if _, ok := existsM[model.Name]; ok {
-			return fmt.Errorf("replicate model name")
+			return fmt.Errorf("duplicate model name %q", model.Name)
+		}
+		if len(model.Upstream) == 0 {
+			return fmt.Errorf("model %q has empty upstream", model.Name)
 		}
 		if _, ok := exists[model.Upstream]; !ok {
-			return fmt.Errorf("upstream doesn't exist")
+			return fmt.Errorf("model %q references unknown upstream %q", model.Name, model.Upstream)
 		}
 		existsM[model.Name] = struct{}{}
 	}

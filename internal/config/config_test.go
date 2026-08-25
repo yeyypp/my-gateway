@@ -25,12 +25,12 @@ func TestValidateConfig(t *testing.T) {
 	}{
 		{
 			name:    "empty upstreams",
-			wantErr: "empty upstreams",
+			wantErr: "at least one upstream is required",
 			config:  Config{Models: []Model{validModel}},
 		},
 		{
 			name:    "empty upstream name",
-			wantErr: "empty upstream name",
+			wantErr: "upstream at index 0 has empty name",
 			config: Config{
 				Upstreams: []Upstream{{BaseURL: validUpstream.BaseURL}},
 				Models:    []Model{validModel},
@@ -38,7 +38,7 @@ func TestValidateConfig(t *testing.T) {
 		},
 		{
 			name:    "empty upstream base URL",
-			wantErr: "empty upstream base url",
+			wantErr: `upstream "mock-a" has empty base URL`,
 			config: Config{
 				Upstreams: []Upstream{{Name: validUpstream.Name}},
 				Models:    []Model{validModel},
@@ -46,7 +46,7 @@ func TestValidateConfig(t *testing.T) {
 		},
 		{
 			name:    "duplicate upstream name",
-			wantErr: "replicate upstream name",
+			wantErr: `duplicate upstream name "mock-a"`,
 			config: Config{
 				Upstreams: []Upstream{
 					validUpstream,
@@ -57,7 +57,7 @@ func TestValidateConfig(t *testing.T) {
 		},
 		{
 			name:    "invalid upstream base URL",
-			wantErr: `upstream base URL "localhost:8091" uses unsupported scheme "localhost"`,
+			wantErr: `upstream "mock-a": upstream base URL "localhost:8091" uses unsupported scheme "localhost"`,
 			config: Config{
 				Upstreams: []Upstream{
 					{Name: validUpstream.Name, BaseURL: "localhost:8091"},
@@ -67,14 +67,14 @@ func TestValidateConfig(t *testing.T) {
 		},
 		{
 			name:    "empty models",
-			wantErr: "empty models",
+			wantErr: "at least one model is required",
 			config: Config{
 				Upstreams: []Upstream{validUpstream},
 			},
 		},
 		{
 			name:    "empty model name",
-			wantErr: "empty model name",
+			wantErr: "model at index 0 has empty name",
 			config: Config{
 				Upstreams: []Upstream{validUpstream},
 				Models:    []Model{{Upstream: validUpstream.Name}},
@@ -82,7 +82,7 @@ func TestValidateConfig(t *testing.T) {
 		},
 		{
 			name:    "duplicate model name",
-			wantErr: "replicate model name",
+			wantErr: `duplicate model name "model-a"`,
 			config: Config{
 				Upstreams: []Upstream{validUpstream},
 				Models: []Model{
@@ -93,7 +93,7 @@ func TestValidateConfig(t *testing.T) {
 		},
 		{
 			name:    "empty model upstream",
-			wantErr: "upstream doesn't exist",
+			wantErr: `model "model-a" has empty upstream`,
 			config: Config{
 				Upstreams: []Upstream{validUpstream},
 				Models:    []Model{{Name: validModel.Name}},
@@ -101,7 +101,7 @@ func TestValidateConfig(t *testing.T) {
 		},
 		{
 			name:    "unknown model upstream",
-			wantErr: "upstream doesn't exist",
+			wantErr: `model "model-a" references unknown upstream "mock-unknown"`,
 			config: Config{
 				Upstreams: []Upstream{validUpstream},
 				Models:    []Model{{Name: validModel.Name, Upstream: "mock-unknown"}},
@@ -227,7 +227,7 @@ models:
   - name: model-a
     upstream: mock-unknown
 `,
-			wantErr: "upstream doesn't exist",
+			wantErr: `model "model-a" references unknown upstream "mock-unknown"`,
 		},
 	}
 

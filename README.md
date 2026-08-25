@@ -9,11 +9,11 @@ Client
   → POST :8080/v1/chat/completions
   → JSON validation and request timeout
   → ModelRouter
-      ├── model-a → ReverseProxy → Mock A :8091
-      └── model-b → ReverseProxy → Mock B :8092
+      ├── model-a → mock-a → ReverseProxy → :8091
+      └── model-b → mock-b → ReverseProxy → :8092
 ```
 
-The Gateway owns routing and upstream addresses. Clients only know the Gateway URL and logical model name.
+The Gateway loads logical-model routes and upstream addresses from configuration before it starts listening. Clients only know the Gateway URL and logical model name.
 
 ## Project layout
 
@@ -21,7 +21,9 @@ The Gateway owns routing and upstream addresses. Clients only know the Gateway U
 cmd/
   gateway/          Gateway process and dependency wiring
   mock-upstream/    Parameterized Chat Completions mock
+configs/            Gateway model and upstream configuration
 internal/
+  config/            Configuration loading and validation
   handlers/         JSON responses and mock API handler
   middleware/       Request validation, model extraction, and timeout
   proxy/            Reverse-proxy construction and failure handling
@@ -45,6 +47,42 @@ make run-mock-a
 make run-mock-b
 make run-gateway
 ```
+
+`make run-gateway` uses `configs/default_config.yaml`. To select another configuration explicitly:
+
+```sh
+go run ./cmd/gateway start --config path/to/config.yaml
+```
+
+The Gateway validates the complete configuration before listening on port 8080. Invalid URLs, duplicate names, missing fields, and model references to unknown upstreams cause startup to fail.
+
+## Configure routing
+
+Upstreams define internal service names and addresses. Models define the logical names accepted from clients and reference one of those upstreams:
+
+```yaml
+upstreams:
+  - name: mock-a
+    base_url: http://localhost:8091
+  - name: mock-b
+    base_url: http://localhost:8092
+
+models:
+  - name: model-a
+    upstream: mock-a
+  - name: model-b
+    upstream: mock-b
+```
+
+To route `model-a` to Mock B, change only its configured upstream and restart the Gateway:
+
+```yaml
+models:
+  - name: model-a
+    upstream: mock-b
+```
+
+The client still requests `model-a`; it does not learn the selected upstream name or address.
 
 ## Try the routes
 
