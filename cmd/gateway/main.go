@@ -45,6 +45,24 @@ func main() {
 }
 
 func runGateway(config config.Config) error {
+	router, err := buildRouter(config)
+	if err != nil {
+		return err
+	}
+	server := &http.Server{
+		Addr:         ":8080",
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  30 * time.Second,
+	}
+	mux := http.NewServeMux()
+	mux.Handle("POST /v1/chat/completions", middleware.ValidateJSONRequest(middleware.RequestTimeout(5*time.Second)(router)))
+	server.Handler = mux
+	log.Println("Starting gateway server on :8080")
+	return server.ListenAndServe()
+}
+
+func buildRouter(config config.Config) (*router.ModelRouter, error) {
 	sharedTransport := &http.Transport{
 		MaxIdleConns:          5,
 		MaxIdleConnsPerHost:   2,
@@ -61,7 +79,7 @@ func runGateway(config config.Config) error {
 			sharedTransport,
 		)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		for _, model := range config.Models {
@@ -70,17 +88,5 @@ func runGateway(config config.Config) error {
 			}
 		}
 	}
-	modelRouter := router.NewModelRouter(routes)
-
-	server := &http.Server{
-		Addr:         ":8080",
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  30 * time.Second,
-	}
-	mux := http.NewServeMux()
-	mux.Handle("POST /v1/chat/completions", middleware.ValidateJSONRequest(middleware.RequestTimeout(5*time.Second)(modelRouter)))
-	server.Handler = mux
-	log.Println("Starting gateway server on :8080")
-	return server.ListenAndServe()
+	return router.NewModelRouter(routes), nil
 }
