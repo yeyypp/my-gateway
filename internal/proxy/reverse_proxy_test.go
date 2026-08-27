@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,13 +24,25 @@ func newTestProxy(t *testing.T, upstreamURL string) http.Handler {
 	t.Cleanup(transport.CloseIdleConnections)
 
 	proxy, err := BuildReverseProxy(
-		RoutePolicy{UpstreamURL: upstreamURL},
+		RoutePolicy{UpstreamURL: upstreamURL, UpstreamModel: "real-model"},
 		transport,
 	)
 	if err != nil {
 		t.Fatalf("failed to create proxy: %v", err)
 	}
-	return proxy
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest); !ok {
+			chatReq := protocol.ChatCompletionRequest{
+				Model: "logic-model",
+				Messages: []protocol.Message{
+					{Role: "user", Content: "test"},
+				},
+			}
+			ctx := context.WithValue(r.Context(), middleware.ChatReqKey, chatReq)
+			r = r.WithContext(ctx)
+		}
+		proxy.ServeHTTP(w, r)
+	})
 }
 
 func TestPropagateStatusCode(t *testing.T) {
@@ -281,6 +294,10 @@ func TestClientCancel(t *testing.T) {
 	upstreamWorking := make(chan struct{})
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			errChan <- err
+			return
+		}
 		close(upstreamWorking)
 		select {
 		case <-time.After(2 * time.Second):

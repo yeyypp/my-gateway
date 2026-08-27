@@ -2,18 +2,26 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"shuai/gateway/internal/config"
 	"shuai/gateway/internal/middleware"
+	"shuai/gateway/internal/protocol"
 )
 
 func TestConfigToRouter(t *testing.T) {
 	newUpstream := func(name string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var chatReq protocol.ChatCompletionRequest
+			if err := json.NewDecoder(r.Body).Decode(&chatReq); err != nil {
+				http.Error(w, "invalid request body", http.StatusBadRequest)
+				return
+			}
 			w.Header().Set("X-Upstream", name)
+			w.Header().Set("X-Upstream-Model", chatReq.Model)
 			w.WriteHeader(http.StatusNoContent)
 		}))
 	}
@@ -27,16 +35,19 @@ func TestConfigToRouter(t *testing.T) {
 		name             string
 		selectedUpstream string
 		wantUpstream     string
+		realModel        string
 	}{
 		{
 			name:             "model-a routes to mock-a",
 			selectedUpstream: "mock-a",
 			wantUpstream:     "mock-a",
+			realModel:        "real-model-a",
 		},
 		{
 			name:             "model-a routes to mock-b",
 			selectedUpstream: "mock-b",
 			wantUpstream:     "mock-b",
+			realModel:        "real-model-b",
 		},
 	}
 
@@ -44,7 +55,7 @@ func TestConfigToRouter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Config{
 				Models: []config.Model{
-					{LogicModelName: "model-a", Upstream: tc.selectedUpstream},
+					{LogicModel: "model-a", Upstream: tc.selectedUpstream, RealModel: tc.realModel},
 				},
 				Upstreams: []config.Upstream{
 					{Name: "mock-a", BaseURL: upstreamA.URL},
@@ -57,7 +68,13 @@ func TestConfigToRouter(t *testing.T) {
 				t.Fatalf("build router: %v", err)
 			}
 
-			ctx := context.WithValue(context.Background(), middleware.ChatReqKey, "model-a")
+			chatReq := protocol.ChatCompletionRequest{
+				Model: "model-a",
+				Messages: []protocol.Message{
+					{Role: "user", Content: "test"},
+				},
+			}
+			ctx := context.WithValue(context.Background(), middleware.ChatReqKey, chatReq)
 			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", nil)
 			recorder := httptest.NewRecorder()
 
@@ -70,6 +87,9 @@ func TestConfigToRouter(t *testing.T) {
 			}
 			if got := result.Header.Get("X-Upstream"); got != tc.wantUpstream {
 				t.Fatalf("expected upstream %q, got %q", tc.wantUpstream, got)
+			}
+			if got := result.Header.Get("X-Upstream-Model"); got != tc.realModel {
+				t.Fatalf("expected upstream model %q, got %q", tc.realModel, got)
 			}
 		})
 	}

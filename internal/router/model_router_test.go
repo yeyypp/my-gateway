@@ -27,7 +27,7 @@ func TestModelRouterRoutesKnownModels(t *testing.T) {
 
 	for _, model := range []string{"model-a", "model-b"} {
 		t.Run(model, func(t *testing.T) {
-			ctx := context.WithValue(context.Background(), middleware.ChatReqKey, model)
+			ctx := context.WithValue(context.Background(), middleware.ChatReqKey, protocol.ChatCompletionRequest{Model: model})
 			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", nil)
 			recorder := httptest.NewRecorder()
 
@@ -89,7 +89,7 @@ func TestModelRouterRejectsInvalidModels(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			if tc.withModel {
-				ctx = context.WithValue(ctx, middleware.ChatReqKey, tc.model)
+				ctx = context.WithValue(ctx, middleware.ChatReqKey, protocol.ChatCompletionRequest{Model: tc.model})
 			}
 			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", nil)
 			recorder := httptest.NewRecorder()

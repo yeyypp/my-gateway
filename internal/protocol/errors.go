@@ -16,6 +16,7 @@ const (
 	ErrorCodeModelNotFound            ErrorCode = "model_not_found"
 	ErrorCodeRequestTooLarge          ErrorCode = "request_too_large"
 	ErrorCodeRequestBodyReadFailed    ErrorCode = "request_body_read_failed"
+	ErrorCodeRequestEncodingFailed    ErrorCode = "request_encoding_failed"
 	ErrorCodeUpstreamTimeout          ErrorCode = "upstream_timeout"
 	ErrorCodeUpstreamUnavailable      ErrorCode = "upstream_unavailable"
 )

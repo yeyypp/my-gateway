@@ -21,7 +21,7 @@ type RoutePolicy struct {
 }
 
 func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http.Handler, error) {
-	if routePolicy.UpstreamURL == "" || transport == nil {
+	if routePolicy.UpstreamURL == "" || routePolicy.UpstreamModel == "" || transport == nil {
 		return nil, errors.New("invalid policy or transport")
 	}
 	target, err := url.Parse(routePolicy.UpstreamURL)
@@ -112,10 +112,10 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		content, err := json.Marshal(chatReq)
 		if err != nil {
 			handlers.SendError(w, protocol.APIError{
-				Message: "json marshal error",
+				Message: "encode upstream request failed",
 				Type:    protocol.ErrorTypeGateway,
-				Code:    protocol.ErrorCodeInvalidJSON,
-			}, http.StatusBadGateway)
+				Code:    protocol.ErrorCodeRequestEncodingFailed,
+			}, http.StatusInternalServerError)
 			return
 		}
 

@@ -9,10 +9,10 @@ upstreams:
 models:
   - logic_model: model-a
     upstream: mock-a
-    real_model: model-a 
+    real_model: model-a
   - logic_model: model-b
     upstream: mock-b
     real_model: model-b
   - logic_model: local
-    upstream: ollama 
-    real_model: gemma4:e2b-mlx 
+    upstream: ollama
+    real_model: gemma4:e2b-mlx

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -60,7 +59,7 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		err = json.Unmarshal(content, &chatReq)
 		if err != nil {
 			handlers.SendError(w, protocol.APIError{
-				Message: fmt.Sprintf("invalid json: %s", err.Error()),
+				Message: "invalid json",
 				Type:    protocol.ErrorTypeInvalidRequest,
 				Code:    protocol.ErrorCodeInvalidJSON,
 			}, http.StatusBadRequest)

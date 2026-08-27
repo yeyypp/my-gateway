@@ -19,7 +19,7 @@ func NewModelRouter(routes map[string]http.Handler) *ModelRouter {
 
 func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	chatReq, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest)
-	if !ok {
+	if !ok || chatReq.Model == "" {
 		handlers.SendError(w, protocol.APIError{
 			Message: "model is required",
 			Type:    protocol.ErrorTypeInvalidRequest,
