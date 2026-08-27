@@ -117,8 +117,8 @@
 - 当前阶段：阶段 A，最小 AI Gateway
 - 当前主题：W2 模型协议、多上游与路由
 - 当前里程碑：W2-M2 配置化与首次真实模型任务
-- 状态：待开始
-- 最近代码进度更新时间：2026-08-24
+- 状态：进行中；配置化、逻辑模型到真实模型的映射及请求改写已完成，首次真实任务待验证
+- 最近代码进度更新时间：2026-08-27
 - 当前分支：master
 
 已经验证：
@@ -131,18 +131,21 @@
 - 空 `messages` 和 `stream: true` 在 Gateway 边界返回稳定的 400 错误；
 - 400、502、504 统一错误 envelope；
 - Study Assistant → Gateway → Mock A/B 已完成手动演示；
-- 2026-08-24 重新执行 Test、Race、Vet 和 Build，全部通过。
+- Gateway 可从 YAML 加载 Upstream、Base URL、逻辑模型、真实模型名和引用关系，并在监听前拒绝缺失字段、重复名称、非法 URL 与未知 Upstream；
+- 配置到路由的组装测试证明：不修改路由代码即可改变逻辑模型指向的 Upstream，且上游收到配置指定的真实模型名；
+- Middleware 只解析一次最小 Chat Completions 请求，Proxy 在保留逻辑路由语义的同时，将转发请求中的 `model` 改写为真实模型名；
+- macOS Ollama 的 `gemma4:e2b-mlx` 已启动，OrbStack Linux 已通过 `/v1/models` 和 `/v1/chat/completions` 手动验证 OpenAI-Compatible 连通性；
+- 2026-08-27 重新执行 Test、Race、Vet 和 Build，全部通过。
 
 当前待完成的工作单元：
 
-1. 给 Gateway 增加配置文件支持，使其能从配置建立逻辑模型到上游的路由，在监听前拒绝错误配置，并通过测试和实际运行证明修改配置可以改变路由结果；
-2. 确认真实云端或本地 OpenAI-Compatible 模型条件，并按条件完成真实任务或记录待补项。
+1. 使用逻辑模型 `local`，让 Study Assistant 经 Gateway 调用本机 Ollama，完成一次真实代码学习任务，并记录输入摘要、实际模型、结果和人工评价；若出现超时或兼容性问题，只处理这条真实链路暴露的最小差异。
 
 下一次可见成果：
 
-> 不修改 Go 路由代码，只修改配置即可改变 model-a / model-b 指向的上游；非法配置会让 Gateway 启动失败并给出可理解错误。
+> Study Assistant 只提交 Gateway 地址和逻辑模型 `local`，Gateway 将其路由到 Ollama 并改写为 `gemma4:e2b-mlx`，最终返回一份可评价的真实模型结果。
 
-当前外部条件待确认：是否具备真实云端或本地 OpenAI-Compatible 模型；最晚在“可投递后端核心版”检查点前完成真实模型验证。
+当前外部条件已具备：本机 Ollama 和 `gemma4:e2b-mlx` 可从开发虚拟机访问；尚未验证 Study Assistant → Gateway → Ollama 的完整真实任务链路。
 
 ## 1.2 已完成摘要
 
@@ -398,7 +401,7 @@ study-assistant analyze issue.md --model model-a
 
 包含：
 
-- 将 Upstream、Base URL 和逻辑模型映射移入 YAML 或 JSON；
+- 将 Upstream、Base URL、逻辑模型和真实模型名映射移入 YAML 或 JSON；
 - 启动时校验非法 URL、重复模型、未知 Upstream 和缺失字段；
 - 配置只加入当前需要的字段；
 - 接入一个最小 OpenAI-Compatible 云端或本地上游；
@@ -617,7 +620,7 @@ pprof 不要求为了计划强行制造问题。若 Benchmark 或故障实验发
 - 审计 `/v1/chat/completions` 非流式、流式和错误行为；
 - 形成支持、透传、忽略和拒绝的兼容矩阵；
 - 使用一个标准 OpenAI-Compatible 客户端调用自定义 Base URL；
-- 在现有 Route / Upstream 语义上增加真实模型名、版本、能力、价格和状态；
+- 扩展现有 Route / Upstream 与真实模型映射，增加版本、能力、价格和状态；
 - 从上游 Usage 获取 Token；缺失时记录未知，不伪造精确值；
 - 正确处理流式 Usage 最终写入；
 - 计算并标明估算成本与上游账单的区别；
