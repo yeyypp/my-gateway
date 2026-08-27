@@ -3,9 +3,16 @@ upstreams:
     base_url: http://localhost:8091
   - name: mock-b
     base_url: http://localhost:8092
+  - name: ollama
+    base_url: http://host.orb.internal:11434
 
 models:
-  - name: model-a
+  - logic_model: model-a
     upstream: mock-a
-  - name: model-b
+    real_model: model-a 
+  - logic_model: model-b
     upstream: mock-b
+    real_model: model-b
+  - logic_model: local
+    upstream: ollama 
+    real_model: gemma4:e2b-mlx 

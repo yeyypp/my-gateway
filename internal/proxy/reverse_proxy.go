@@ -1,18 +1,23 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"shuai/gateway/internal/handlers"
+	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/protocol"
 )
 
 type RoutePolicy struct {
-	UpstreamURL string
+	UpstreamURL   string
+	UpstreamModel string
 }
 
 func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http.Handler, error) {
@@ -92,7 +97,34 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		},
 	}
 
-	return proxy, nil
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatReq, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest)
+		if !ok {
+			handlers.SendError(w, protocol.APIError{
+				Message: "missing chatReq",
+				Type:    protocol.ErrorTypeGateway,
+				Code:    protocol.ErrorCodeMissingRequiredParameter,
+			}, http.StatusBadGateway)
+			return
+		}
+
+		chatReq.Model = routePolicy.UpstreamModel
+		content, err := json.Marshal(chatReq)
+		if err != nil {
+			handlers.SendError(w, protocol.APIError{
+				Message: "json marshal error",
+				Type:    protocol.ErrorTypeGateway,
+				Code:    protocol.ErrorCodeInvalidJSON,
+			}, http.StatusBadGateway)
+			return
+		}
+
+		proxyReq := r.Clone(r.Context())
+		proxyReq.Body = io.NopCloser(bytes.NewReader(content))
+		proxyReq.ContentLength = int64(len(content))
+		proxy.ServeHTTP(w, proxyReq)
+	}), nil
+
 }
 
 func upstreamResponseCategory(statusCode int) string {

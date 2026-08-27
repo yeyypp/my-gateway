@@ -18,8 +18,8 @@ func NewModelRouter(routes map[string]http.Handler) *ModelRouter {
 }
 
 func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	model, ok := r.Context().Value(middleware.ModelContextKey).(string)
-	if !ok || model == "" {
+	chatReq, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest)
+	if !ok {
 		handlers.SendError(w, protocol.APIError{
 			Message: "model is required",
 			Type:    protocol.ErrorTypeInvalidRequest,
@@ -29,7 +29,7 @@ func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target, ok := m.routes[model]
+	target, ok := m.routes[chatReq.Model]
 	if !ok {
 		handlers.SendError(w, protocol.APIError{
 			Message: "model is not supported",

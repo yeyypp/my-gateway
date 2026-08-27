@@ -71,20 +71,19 @@ func buildRouter(config config.Config) (*router.ModelRouter, error) {
 	}
 
 	routes := make(map[string]http.Handler)
-	for _, upstream := range config.Upstreams {
-		proxy, err := proxy.BuildReverseProxy(
-			proxy.RoutePolicy{
-				UpstreamURL: upstream.BaseURL,
-			},
-			sharedTransport,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, model := range config.Models {
+loop:
+	for _, model := range config.Models {
+		for _, upstream := range config.Upstreams {
 			if model.Upstream == upstream.Name {
-				routes[model.Name] = proxy
+				proxy, err := proxy.BuildReverseProxy(proxy.RoutePolicy{
+					UpstreamURL:   upstream.BaseURL,
+					UpstreamModel: model.RealModel,
+				}, sharedTransport)
+				if err != nil {
+					return nil, err
+				}
+				routes[model.LogicModel] = proxy
+				continue loop
 			}
 		}
 	}

@@ -14,8 +14,8 @@ func TestValidateConfig(t *testing.T) {
 		BaseURL: "http://localhost:8091",
 	}
 	validModel := Model{
-		Name:     "model-a",
-		Upstream: "mock-a",
+		LogicModel: "model-a",
+		Upstream:   "mock-a",
 	}
 
 	tests := []struct {
@@ -87,7 +87,7 @@ func TestValidateConfig(t *testing.T) {
 				Upstreams: []Upstream{validUpstream},
 				Models: []Model{
 					validModel,
-					{Name: validModel.Name, Upstream: validUpstream.Name},
+					{LogicModel: validModel.LogicModel, Upstream: validUpstream.Name},
 				},
 			},
 		},
@@ -96,7 +96,7 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: `model "model-a" has empty upstream`,
 			config: Config{
 				Upstreams: []Upstream{validUpstream},
-				Models:    []Model{{Name: validModel.Name}},
+				Models:    []Model{{LogicModel: validModel.LogicModel}},
 			},
 		},
 		{
@@ -104,7 +104,7 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: `model "model-a" references unknown upstream "mock-unknown"`,
 			config: Config{
 				Upstreams: []Upstream{validUpstream},
-				Models:    []Model{{Name: validModel.Name, Upstream: "mock-unknown"}},
+				Models:    []Model{{LogicModel: validModel.LogicModel, Upstream: "mock-unknown"}},
 			},
 		},
 		{
@@ -205,12 +205,13 @@ func TestLoad(t *testing.T) {
   - name: mock-a
     base_url: http://localhost:8091
 models:
-  - name: model-a
+  - logic_model: model-a
     upstream: mock-a
+	real_model:model-a
 `,
 			wantConfig: Config{
 				Upstreams: []Upstream{{Name: "mock-a", BaseURL: "http://localhost:8091"}},
-				Models:    []Model{{Name: "model-a", Upstream: "mock-a"}},
+				Models:    []Model{{LogicModel: "model-a", Upstream: "mock-a"}},
 			},
 		},
 		{
@@ -224,8 +225,9 @@ models:
   - name: mock-a
     base_url: http://localhost:8091
 models:
-  - name: model-a
+  - logic_model: model-a
     upstream: mock-unknown
+	real_model:model-a
 `,
 			wantErr: `model "model-a" references unknown upstream "mock-unknown"`,
 		},

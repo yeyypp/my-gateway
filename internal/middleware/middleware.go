@@ -17,7 +17,7 @@ import (
 type contextKey string
 
 const (
-	ModelContextKey = contextKey("model")
+	ChatReqKey = contextKey("chatReqKey")
 )
 
 func ValidateJSONRequest(next http.Handler) http.Handler {
@@ -56,16 +56,6 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		r.Body = io.NopCloser(bytes.NewReader(content))
 		r.ContentLength = int64(len(content))
 
-		if !json.Valid(content) {
-			log.Printf("gateway_error category=invalid_json status=%d method=%s path=%s", http.StatusBadRequest, r.Method, r.URL.Path)
-			handlers.SendError(w, protocol.APIError{
-				Message: "invalid json",
-				Type:    protocol.ErrorTypeInvalidRequest,
-				Code:    protocol.ErrorCodeInvalidJSON,
-			}, http.StatusBadRequest)
-			return
-		}
-
 		var chatReq protocol.ChatCompletionRequest
 		err = json.Unmarshal(content, &chatReq)
 		if err != nil {
@@ -97,8 +87,7 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), ModelContextKey, chatReq.Model)
-
+		ctx := context.WithValue(r.Context(), ChatReqKey, chatReq)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -19,8 +19,9 @@ type Config struct {
 }
 
 type Model struct {
-	Name     string `yaml:"name"`
-	Upstream string `yaml:"upstream"`
+	LogicModel string `yaml:"logic_model"`
+	Upstream   string `yaml:"upstream"`
+	RealModel  string `yaml:"real_model"`
 }
 
 type Upstream struct {
@@ -74,19 +75,22 @@ func validateConfig(config Config) error {
 	}
 	existsM := make(map[string]struct{})
 	for index, model := range config.Models {
-		if len(model.Name) == 0 {
-			return fmt.Errorf("model at index %d has empty name", index)
+		if len(model.LogicModel) == 0 {
+			return fmt.Errorf("logic model at index %d has empty name", index)
 		}
-		if _, ok := existsM[model.Name]; ok {
-			return fmt.Errorf("duplicate model name %q", model.Name)
+		if len(model.RealModel) == 0 {
+			return fmt.Errorf("real model at index %d has empty name", index)
+		}
+		if _, ok := existsM[model.LogicModel]; ok {
+			return fmt.Errorf("duplicate model name %q", model.LogicModel)
 		}
 		if len(model.Upstream) == 0 {
-			return fmt.Errorf("model %q has empty upstream", model.Name)
+			return fmt.Errorf("model %q has empty upstream", model.LogicModel)
 		}
 		if _, ok := exists[model.Upstream]; !ok {
-			return fmt.Errorf("model %q references unknown upstream %q", model.Name, model.Upstream)
+			return fmt.Errorf("model %q references unknown upstream %q", model.LogicModel, model.Upstream)
 		}
-		existsM[model.Name] = struct{}{}
+		existsM[model.LogicModel] = struct{}{}
 	}
 	return nil
 }

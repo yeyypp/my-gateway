@@ -44,7 +44,7 @@ func TestConfigToRouter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Config{
 				Models: []config.Model{
-					{Name: "model-a", Upstream: tc.selectedUpstream},
+					{LogicModelName: "model-a", Upstream: tc.selectedUpstream},
 				},
 				Upstreams: []config.Upstream{
 					{Name: "mock-a", BaseURL: upstreamA.URL},
@@ -57,7 +57,7 @@ func TestConfigToRouter(t *testing.T) {
 				t.Fatalf("build router: %v", err)
 			}
 
-			ctx := context.WithValue(context.Background(), middleware.ModelContextKey, "model-a")
+			ctx := context.WithValue(context.Background(), middleware.ChatReqKey, "model-a")
 			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", nil)
 			recorder := httptest.NewRecorder()
 
