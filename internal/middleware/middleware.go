@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -12,6 +11,8 @@ import (
 	"shuai/gateway/internal/handlers"
 	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/protocol"
+
+	"go.uber.org/zap"
 )
 
 type contextKey string
@@ -35,14 +36,14 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		content, err := io.ReadAll(limitedBody)
 		if err != nil {
 			if _, ok := err.(*http.MaxBytesError); ok {
-				log.Errorf("request is larger than 1MB")
+				log.Error("request body is larger than 1 MiB")
 				handlers.SendError(w, protocol.APIError{
 					Message: "request body too large",
 					Type:    protocol.ErrorTypeInvalidRequest,
 					Code:    protocol.ErrorCodeRequestTooLarge,
 				}, http.StatusRequestEntityTooLarge)
 			} else {
-				log.Errorf("read request body failed, err:%v", err)
+				log.Error("read request body failed", zap.Error(err))
 				handlers.SendError(w, protocol.APIError{
 					Message: "read request body failed",
 					Type:    protocol.ErrorTypeInvalidRequest,
@@ -59,7 +60,7 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		var chatReq protocol.ChatCompletionRequest
 		err = json.Unmarshal(content, &chatReq)
 		if err != nil {
-			log.Errorf("unmarshal chatReq failed. err:%v", err)
+			log.Error("unmarshal chat request failed", zap.Error(err))
 			handlers.SendError(w, protocol.APIError{
 				Message: "invalid json",
 				Type:    protocol.ErrorTypeInvalidRequest,
@@ -69,7 +70,7 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		}
 
 		if len(chatReq.Messages) == 0 {
-			log.Errorf("empty chatReq messages")
+			log.Error("chat request messages are empty")
 			handlers.SendError(w, protocol.APIError{
 				Message: "messages must not be empty",
 				Type:    protocol.ErrorTypeInvalidRequest,
@@ -80,7 +81,7 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		}
 
 		if chatReq.Stream {
-			log.Errorf("unsupport stream type, stream:%s", chatReq.Stream)
+			log.Error("streaming is not supported", zap.Bool("stream", chatReq.Stream))
 			handlers.SendError(w, protocol.APIError{
 				Message: "streaming is not supported",
 				Type:    protocol.ErrorTypeInvalidRequest,
@@ -101,13 +102,7 @@ func RequestTimeout(timeout time.Duration) func(http.Handler) http.Handler {
 			ctx, cancel := context.WithTimeout(r.Context(), timeout)
 			defer cancel()
 
-			start := time.Now()
 			next.ServeHTTP(w, r.WithContext(ctx))
-			duration := time.Since(start)
-
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				log.Errorf("upstream timeout, duration:%dms", duration.Milliseconds())
-			}
 		})
 	}
 }

@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"shuai/gateway/internal/protocol"
 	"time"
+
+	"shuai/gateway/internal/protocol"
 )
 
 type MockAPIHandler struct {

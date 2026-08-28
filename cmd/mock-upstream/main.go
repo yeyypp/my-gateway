@@ -2,9 +2,14 @@ package main
 
 import (
 	"flag"
-	"log"
+	"fmt"
 	"net/http"
+	"os"
+
 	"shuai/gateway/internal/handlers"
+	"shuai/gateway/internal/log"
+
+	"go.uber.org/zap"
 )
 
 var (
@@ -14,6 +19,11 @@ var (
 )
 
 func main() {
+	if err := log.Init("info", "stdout"); err != nil {
+		fmt.Fprintf(os.Stderr, "initialize logger: %v\n", err)
+		os.Exit(1)
+	}
+
 	flag.StringVar(&name, "name", "mock-a", "mock service name")
 	flag.StringVar(&addr, "addr", ":8091", "mock service addr")
 	flag.StringVar(&model, "model", "model-a", "mock service model")
@@ -25,7 +35,15 @@ func main() {
 		Model: model,
 	}
 	server := NewMockServer(config)
-	server.Start()
+	log.Info("mock upstream starting",
+		zap.String("addr", server.Server.Addr),
+	)
+	if err := server.Start(); err != nil {
+		log.Error("mock upstream stopped", zap.Error(err))
+		_ = log.Sync()
+		os.Exit(1)
+	}
+	_ = log.Sync()
 }
 
 type Config struct {
@@ -58,6 +76,6 @@ func NewMockServer(config Config) *MockServer {
 	return mockServer
 }
 
-func (mockServer *MockServer) Start() {
-	log.Fatal(mockServer.Server.ListenAndServe())
+func (mockServer *MockServer) Start() error {
+	return mockServer.Server.ListenAndServe()
 }

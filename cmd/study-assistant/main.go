@@ -11,8 +11,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"shuai/gateway/internal/protocol"
+	"strings"
 	"time"
+
+	"shuai/gateway/internal/protocol"
 
 	"github.com/spf13/cobra"
 )
@@ -105,11 +107,28 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp protocol.ErrorResponse
-		if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
-			return err
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		if err != nil {
+			return fmt.Errorf("gateway request failed: http_status=%s, read error response: %w", resp.Status, err)
 		}
-		return fmt.Errorf("err msg:%s, type:%s", errResp.Error.Message, errResp.Error.Type)
+
+		var errResp protocol.ErrorResponse
+		if err := json.Unmarshal(body, &errResp); err == nil && hasAPIError(errResp.Error) {
+			return fmt.Errorf(
+				"gateway request failed: http_status=%s, type=%s, code=%s, param=%q, message=%q",
+				resp.Status,
+				errResp.Error.Type,
+				errResp.Error.Code,
+				errResp.Error.Param,
+				errResp.Error.Message,
+			)
+		}
+
+		responseText := strings.TrimSpace(string(body))
+		if responseText == "" {
+			responseText = "<empty body>"
+		}
+		return fmt.Errorf("gateway request failed: http_status=%s, response=%q", resp.Status, responseText)
 	} else {
 		var chatResp protocol.ChatCompletionResponse
 		if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
@@ -123,4 +142,8 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 		}
 	}
 	return nil
+}
+
+func hasAPIError(apiErr protocol.APIError) bool {
+	return apiErr.Message != "" || apiErr.Type != "" || apiErr.Code != "" || apiErr.Param != ""
 }

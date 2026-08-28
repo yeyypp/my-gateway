@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -129,11 +130,43 @@ func TestRunAnalyzeReturnsErrorForNon2xxResponse(t *testing.T) {
 		t.Fatal("expected a non-nil error")
 	}
 
-	wantError := "err msg:model is not supported, type:invalid_request_error"
+	wantError := `gateway request failed: http_status=400 Bad Request, type=invalid_request_error, code=model_not_found, param="model", message="model is not supported"`
 	if err.Error() != wantError {
 		t.Fatalf("expected error %q, got %q", wantError, err.Error())
 	}
 	if output.Len() != 0 {
 		t.Fatalf("expected no success output, got %q", output.String())
+	}
+}
+
+func TestRunAnalyzeReturnsReadableErrorForNonEnvelopeResponse(t *testing.T) {
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("test content"), 0644); err != nil {
+		t.Fatalf("write input file: %v", err)
+	}
+
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("upstream failed"))
+	}))
+	defer gateway.Close()
+
+	err := runAnalyze(
+		context.Background(),
+		gateway.Client(),
+		gateway.URL,
+		filePath,
+		"model-a",
+		io.Discard,
+	)
+	if err == nil {
+		t.Fatal("expected a non-nil error")
+	}
+
+	wantError := `gateway request failed: http_status=500 Internal Server Error, response="upstream failed"`
+	if err.Error() != wantError {
+		t.Fatalf("expected error %q, got %q", wantError, err.Error())
 	}
 }

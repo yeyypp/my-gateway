@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -14,6 +15,8 @@ import (
 	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/protocol"
+
+	"go.uber.org/zap"
 )
 
 type RoutePolicy struct {
@@ -44,17 +47,31 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 				path = resp.Request.URL.Path
 			}
 
-			log.Infof("upstream:%s,model:%s,path:%s", routePolicy.UpstreamURL, routePolicy.UpstreamModel, path)
+			log.Info("upstream response received",
+				zap.String("upstream", target.Host),
+				zap.String("model", routePolicy.UpstreamModel),
+				zap.String("path", path),
+			)
 			return nil
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
+			var netErr net.Error
 			switch {
 			case errors.Is(req.Context().Err(), context.Canceled):
-				log.Errorf("client canceled,method:%s,path:%s,err:%v", req.Method, req.URL.Path, err)
+				log.Error("client canceled request",
+					zap.String("method", req.Method),
+					zap.String("path", req.URL.Path),
+					zap.Error(err),
+				)
 				return
-			case errors.Is(req.Context().Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded):
-				log.Errorf("upstream timeout, upstream:%s, err:%v", routePolicy.UpstreamURL, err)
+			case errors.Is(req.Context().Err(), context.DeadlineExceeded),
+				errors.Is(err, context.DeadlineExceeded),
+				errors.As(err, &netErr) && netErr.Timeout():
+				log.Error("upstream request timed out",
+					zap.String("upstream", target.Host),
+					zap.Error(err),
+				)
 				handlers.SendError(w, protocol.APIError{
 					Message: "upstream timeout",
 					Type:    protocol.ErrorTypeGateway,
@@ -62,7 +79,10 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 				}, http.StatusGatewayTimeout)
 				return
 			default:
-				log.Errorf("upstream available, upstream:%s, err:%v", routePolicy.UpstreamURL, err)
+				log.Error("upstream unavailable",
+					zap.String("upstream", target.Host),
+					zap.Error(err),
+				)
 				handlers.SendError(w, protocol.APIError{
 					Message: "upstream unavailable",
 					Type:    protocol.ErrorTypeGateway,
@@ -75,7 +95,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		chatReq, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest)
 		if !ok {
-			log.Errorf("missing chatReq")
+			log.Error("validated request missing from context")
 			handlers.SendError(w, protocol.APIError{
 				Message: "missing chatReq",
 				Type:    protocol.ErrorTypeGateway,
@@ -87,7 +107,9 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		chatReq.Model = routePolicy.UpstreamModel
 		content, err := json.Marshal(chatReq)
 		if err != nil {
-			log.Errorf("json marshal chatReq failed. err:%v", err)
+			log.Error("encode upstream request failed",
+				zap.Error(err),
+			)
 			handlers.SendError(w, protocol.APIError{
 				Message: "encode upstream request failed",
 				Type:    protocol.ErrorTypeGateway,
@@ -102,15 +124,4 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		proxy.ServeHTTP(w, proxyReq)
 	}), nil
 
-}
-
-func upstreamResponseCategory(statusCode int) string {
-	switch {
-	case statusCode >= http.StatusInternalServerError:
-		return "upstream_server_error"
-	case statusCode >= http.StatusBadRequest:
-		return "upstream_client_error"
-	default:
-		return "success"
-	}
 }

@@ -13,12 +13,13 @@ import (
 	"shuai/gateway/internal/router"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func main() {
 	if err := log.Init("info", "stdout"); err != nil {
-		fmt.Fprintf(os.Stderr, "Init log failed. err:%v", err)
-		return
+		fmt.Fprintf(os.Stderr, "initialize logger: %v\n", err)
+		os.Exit(1)
 	}
 
 	rootCmd := &cobra.Command{
@@ -48,8 +49,11 @@ func main() {
 
 	rootCmd.AddCommand(startCmd)
 	if err := rootCmd.Execute(); err != nil {
-		log.Panicf("gateway start failed. err:%v", err)
+		log.Error("gateway stopped", zap.Error(err))
+		_ = log.Sync()
+		os.Exit(1)
 	}
+	_ = log.Sync()
 }
 
 func runGateway(config config.Config) error {
@@ -66,7 +70,7 @@ func runGateway(config config.Config) error {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", middleware.ValidateJSONRequest(middleware.RequestTimeout(5*time.Second)(router)))
 	server.Handler = mux
-	log.Infof("Starting gateway server on :8080")
+	log.Info("gateway server starting", zap.String("addr", server.Addr))
 	return server.ListenAndServe()
 }
 
@@ -83,15 +87,15 @@ loop:
 	for _, model := range config.Models {
 		for _, upstream := range config.Upstreams {
 			if model.Upstream == upstream.Name {
-				proxy, err := proxy.BuildReverseProxy(proxy.RoutePolicy{
+				reverseProxy, err := proxy.BuildReverseProxy(proxy.RoutePolicy{
 					UpstreamURL:   upstream.BaseURL,
 					UpstreamModel: model.RealModel,
 				}, sharedTransport)
 				if err != nil {
-					log.Errorf("BuildReverseProxy failed. err:%v", err)
+					log.Error("build reverse proxy failed", zap.Error(err))
 					return nil, err
 				}
-				routes[model.LogicModel] = proxy
+				routes[model.LogicModel] = reverseProxy
 				continue loop
 			}
 		}

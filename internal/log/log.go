@@ -37,22 +37,6 @@ func Error(msg string, fields ...zap.Field) {
 	logger.Error(msg, fields...)
 }
 
-func Panic(msg string, fields ...zap.Field) {
-	logger.Panic(msg, fields...)
-}
-
-func Infof(template string, args ...any) {
-	logger.Sugar().Infof(template, args...)
-}
-
-func Errorf(template string, args ...any) {
-	logger.Sugar().Errorf(template, args...)
-}
-
-func Panicf(template string, args ...any) {
-	logger.Sugar().Panicf(template, args...)
-}
-
 func Sync() error {
 	return logger.Sync()
 }
