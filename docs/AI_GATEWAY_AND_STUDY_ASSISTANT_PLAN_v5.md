@@ -2,7 +2,7 @@
 
 > 用途：本文件是当前项目路线、当前进度和阶段验收的唯一执行依据。
 > 职业定位：以 Go、分布式系统和控制面经验，转向大模型平台后端、模型服务治理和 AI 应用基础设施。
-> 参考应用：Study Assistant。用户本人是第一个真实用户，应用只通过 Gateway 调用模型。
+> 参考应用：Study Assistant。它优先作为 Gateway 的参考客户端和验证载体，只通过 Gateway 调用模型；只有出现真实、重复的学习需求时才扩展产品能力。
 > 节奏说明：W1、W2 等名称是历史主题编号，不代表自然周；真实进度以可验证成果为准。
 > 历史版本：v4 保留在 `AI_GATEWAY_AND_STUDY_ASSISTANT_PLAN_v4.md`；v3 保留在 `AI_GATEWAY_AND_STUDY_ASSISTANT_PLAN_OLD_v3.md`，均不再作为日常执行入口。
 
@@ -116,8 +116,8 @@
 
 - 当前阶段：阶段 A，最小 AI Gateway
 - 当前主题：W2 模型协议、多上游与路由
-- 当前里程碑：W2-M2 配置化与首次真实模型任务
-- 状态：进行中；配置化、逻辑模型到真实模型的映射及请求改写已完成，首次真实任务待验证
+- 当前里程碑：W2-M3 可追踪、可运行与阶段收口
+- 状态：进行中；W2-M2 的配置化、模型映射、请求改写和真实 Ollama 链路已完成，开始补齐请求追踪与运行状态
 - 最近代码进度更新时间：2026-08-27
 - 当前分支：master
 
@@ -135,26 +135,28 @@
 - 配置到路由的组装测试证明：不修改路由代码即可改变逻辑模型指向的 Upstream，且上游收到配置指定的真实模型名；
 - Middleware 只解析一次最小 Chat Completions 请求，Proxy 在保留逻辑路由语义的同时，将转发请求中的 `model` 改写为真实模型名；
 - macOS Ollama 的 `gemma4:e2b-mlx` 已启动，OrbStack Linux 已通过 `/v1/models` 和 `/v1/chat/completions` 手动验证 OpenAI-Compatible 连通性；
+- Study Assistant 已使用逻辑模型 `local`，经 Gateway 路由和模型改写后调用本机 Ollama，并成功收到回复；该验证证明真实链路可用，不把人为制造的代码学习任务或效果评价作为 W2-M2 的技术阻塞项；
 - 2026-08-27 重新执行 Test、Race、Vet 和 Build，全部通过。
 
 当前待完成的工作单元：
 
-1. 使用逻辑模型 `local`，让 Study Assistant 经 Gateway 调用本机 Ollama，完成一次真实代码学习任务，并记录输入摘要、实际模型、结果和人工评价；若出现超时或兼容性问题，只处理这条真实链路暴露的最小差异。
+1. 建立非流式错误的可诊断基线：明确客户端请求、Gateway 和 Upstream 三类失败的责任边界；引入 Uber Zap 输出一致的结构化日志；让 Study Assistant 在失败时保留足够的 HTTP 与错误 envelope 信息；消除同一超时的重复或矛盾归类。请求标识在下一工作单元接入。
 
 下一次可见成果：
 
-> Study Assistant 只提交 Gateway 地址和逻辑模型 `local`，Gateway 将其路由到 Ollama 并改写为 `gemma4:e2b-mlx`，最终返回一份可评价的真实模型结果。
+> 分别遇到非法客户端请求、Gateway 无法连接上游、Gateway 等待上游超时和 Upstream 返回错误时，可以从 Study Assistant 输出与 Gateway 结构化日志中判断 HTTP 结果、稳定错误语义和失败责任方；一次故障只产生一组不矛盾的诊断信息。
 
-当前外部条件已具备：本机 Ollama 和 `gemma4:e2b-mlx` 可从开发虚拟机访问；尚未验证 Study Assistant → Gateway → Ollama 的完整真实任务链路。
+当前没有外部阻塞；W2-M3 的请求追踪、健康检查、运行文档和阶段演示尚待完成。
 
 ## 1.2 已完成摘要
 
 - [x] W1-M1：请求链路、状态码、错误语义和 Header 行为；
 - [x] W1-M2：Context、超时、取消和资源释放；
 - [x] W1-M3：测试、重构、Race、Vet、Build 和基线复盘；
-- [x] W2-M1：双 Mock、静态逻辑模型路由、Study Assistant CLI 和最小端到端闭环。
+- [x] W2-M1：双 Mock、静态逻辑模型路由、Study Assistant CLI 和最小端到端闭环；
+- [x] W2-M2：配置化、逻辑模型到真实模型的映射、请求改写和本地 Ollama 真实链路验证。
 
-W1 的逐次历史与 v2/v3 变更过程保留在 v3，不在本文件重复；W2-M1 的完成证据记录在对应里程碑复盘中。
+W1 的逐次历史与 v2/v3 变更过程保留在 v3，不在本文件重复；W2-M1 和 W2-M2 的完成证据记录在对应里程碑复盘中。
 
 ---
 
@@ -178,7 +180,7 @@ W1 的逐次历史与 v2/v3 变更过程保留在 v3，不在本文件重复；W
   → 根据证据改进应用或 Gateway
 ```
 
-AI Gateway 是项目主体；Study Assistant 用于提供真实调用场景，不扩展成复杂 Agent 产品。
+AI Gateway 是项目主体；Study Assistant 优先作为参考客户端、真实链路验证入口和后续评价载体，不与成熟聊天产品竞争，也不为了满足计划而制造虚假的使用需求。只有出现真实、重复的学习场景时才扩展其产品能力，不扩展成复杂 Agent 产品。
 
 ## 2.2 交付层级
 
@@ -393,11 +395,11 @@ study-assistant analyze issue.md --model model-a
 - 验证证据：model-a、model-b 和未知模型已手动复核；非法 JSON、缺少 model、空 `messages`、未知模型、`stream: true` 以及 Handler、Router、Proxy、CLI 均有相应自动化测试；2026-08-24 执行 `go test ./...`、`go test -race ./...`、`go vet ./...` 和 `go build ./...` 全部通过；
 - 当前简化与边界：路由和上游地址仍静态写在启动代码中，只接入 Mock，只支持非流式最小协议，不包含 Provider 密钥管理；
 - 对 Study Assistant 的影响：CLI 已形成真实调用入口，后续可以在不改变客户端协议的前提下替换 Gateway 后面的上游；
-- 下一步：进入 W2-M2，把 Upstream、Base URL 和逻辑模型映射配置化，并确认首次真实模型任务的外部条件。
+- 下一步：进入 W2-M2，把 Upstream、Base URL 和逻辑模型映射配置化，并确认真实 OpenAI-Compatible 上游的连通条件。
 
-### [ ] W2-M2：配置化与首次真实模型任务
+### [x] W2-M2：配置化与真实上游验证
 
-可见结果：修改配置即可切换路由；条件具备时，Study Assistant 通过 Gateway 完成第一次真实代码学习任务。
+可见结果：修改配置即可切换路由；Study Assistant 作为参考客户端，通过 Gateway 调用真实 OpenAI-Compatible 上游时无需知道上游地址和真实模型名。
 
 包含：
 
@@ -405,14 +407,13 @@ study-assistant analyze issue.md --model model-a
 - 启动时校验非法 URL、重复模型、未知 Upstream 和缺失字段；
 - 配置只加入当前需要的字段；
 - 接入一个最小 OpenAI-Compatible 云端或本地上游；
-- Provider 密钥只保存在 Gateway，不进入 Study Assistant、日志或 Git；
-- 保存第一次真实任务的输入摘要、模型、结果和人工评价。
+- Provider 密钥只保存在 Gateway，不进入 Study Assistant、日志或 Git。
 
 条件处理：
 
 - 没有云端凭证时，优先尝试本地兼容模型；
 - 云端和本地条件都不具备时，可先完成配置、校验和契约测试；
-- 将真实模型验证记录为跨阶段待补项，不阻塞后续可由 Mock 验证的技术任务；
+- 将真实上游链路验证记录为跨阶段待补项，不阻塞后续可由 Mock 验证的技术任务；
 - 待补项必须在检查点 B 前完成。
 
 验收：
@@ -420,13 +421,27 @@ study-assistant analyze issue.md --model model-a
 - 修改配置即可改变 model-a / model-b 的上游；
 - 配置错误使启动失败且错误可理解；
 - 配置解析和校验有测试；
-- 条件具备时完成至少 1 次真实任务；
+- 条件具备时，参考客户端至少完成 1 次经过 Gateway 的真实上游请求与响应；
 - 客户端不知道上游地址和 Provider 密钥。
+
+#### W2-M2 复盘
+
+- 可演示成果：修改配置即可改变逻辑模型的 Upstream 和真实模型名；Study Assistant 使用逻辑模型 `local`，经 Gateway 调用本机 Ollama 并成功收到回复；
+- 用户问题：客户端无需知道 Ollama 地址或 `gemma4:e2b-mlx`，只提交 Gateway 地址、逻辑模型和输入；
+- 关键设计与数据流：启动时加载并校验配置，由配置组装逻辑模型路由；Proxy 在转发前将逻辑模型改写为上游理解的真实模型名；
+- 验证证据：配置解析、非法配置、配置到路由组装和请求改写均有自动化测试；2026-08-27 执行 Test、Race、Vet 和 Build 全部通过；Study Assistant → Gateway → Ollama 已手动跑通；
+- 当前简化与边界：配置在启动时加载，变更后需要重启；只支持非流式最小协议；Study Assistant 仍是参考客户端，不把通用聊天体验或人为制造的学习任务作为当前目标；
+- 对 Study Assistant 的影响：它已能在客户端协议不变的情况下验证 Mock 和真实模型路由，后续只随 Gateway 验证需求或真实重复使用场景演进；
+- 下一步：进入 W2-M3，补齐请求追踪、健康检查、运行文档和阶段演示。
 
 ### [ ] W2-M3：可追踪、可运行与阶段收口
 
 包含：
 
+- 明确客户端请求、Gateway 内部/代理和 Upstream 响应三类失败的责任边界；
+- 使用 Uber Zap 统一 Gateway 与 Mock 的结构化日志，避免手工拼接键值字符串；
+- Study Assistant 的失败输出保留 HTTP 状态和可用的错误 envelope 信息，无法解析统一 envelope 时仍提供可理解的上游响应线索；
+- 同一次超时只由明确的一层负责分类和记录，避免重复日志或 502/504 语义竞争；
 - 接受可选 `X-Client-Request-Id`；
 - Gateway 生成并返回自己的 Request ID；
 - 使用内部关联 ID 连接 Gateway 与 Mock 日志；
@@ -444,7 +459,7 @@ study-assistant analyze issue.md --model model-a
 - Mock 关闭时 readiness 按设计变化；
 - 单次业务失败不会让健康检查永久失败；
 - 相关测试和全量测试通过；
-- 至少完成一次端到端演示并记录主观评价。
+- 至少完成一次端到端演示并记录可观察结果。
 
 ## 5.2 W3：SSE 与真实模型流式体验
 
@@ -847,6 +862,7 @@ pprof 不要求为了计划强行制造问题。若 Benchmark 或故障实验发
 
 | 日期 | 版本 | 调整 | 原因 |
 |---|---|---|---|
+| 2026-08-27 | v5 | 将 Study Assistant 明确为 Gateway 的参考客户端和验证载体；W2-M2 改为真实上游端到端验证并根据 Ollama 证据收口；W2-M3 先处理错误责任边界、Zap 结构化日志和客户端错误信息，再接入 Request ID | 避免制造虚假产品需求，并优先解决真实 Ollama 调用暴露出的超时诊断困难 |
 | 2026-08-25 | v5 | 教学模式改为低提示度、结果导向和渐进提示；首次任务只给目标、边界、可见结果、验收与整体验证，不再默认展开目录、类型、函数签名、伪代码和逐项实现；合并 W2-M2 的配置解析与启动组装为一个由用户自主设计的完整工作单元 | 保留用户独立分析和方案选择的空间，让讨论由实现中真实出现的问题驱动 |
 | 2026-08-19 | v4 | 合并 Codex 使用规则与回复模板；保留当前 W2 细节并按距离递减远期细节；将 7 组门禁压缩为 3 个交付检查点；删除强制比较四种限流算法和强行制造性能问题；简化任务数量与面试材料门槛；将开源贡献降为 P1 | 降低计划维护成本和重复约束，让计划服务于学习、实现与求职成果 |
 

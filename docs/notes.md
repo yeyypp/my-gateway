@@ -6,6 +6,22 @@
 ## 网关错误码总结
 目前感觉json返回里直接返回状态码不太对，然后有的状态码还可能有歧义，不知道ggateway的问题还是upstream的问题，后续开发后需要再修改下
 
+invalid_request_error
+表示客户端提交给 Gateway 的请求不符合 Gateway 协议，例如：
+- JSON 非法；
+- messages 为空；
+- stream: true 暂不支持；
+- 缺少模型；
+- 模型不存在；
+- 请求体过大。
+通常对应 400 或 413，而且 Gateway 不应访问 Upstream。
+gateway_error
+表示请求格式可能没有问题，但 Gateway 无法完成调用，例如：
+- Gateway 内部编码失败：500；
+- 无法连接 Upstream：502；
+- 等待 Upstream 超过 Gateway Deadline：504。
+upstream_unavailable 和 upstream_timeout 虽然名字中有 upstream，目前归入 gateway_error 是合理的。因为这份错误响应是 Gateway 生成的，而且 Gateway 只知道“我无法完成上游调用”。
+
 ### 客户端请求与拦截
 - 400 Bad Request：非法 JSON 等客户端请求错误由 Gateway 拒绝，不访问上游。
 - 401 Unauthorized：未授权，第 1 周尚未实现。

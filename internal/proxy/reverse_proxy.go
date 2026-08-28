@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+
 	"shuai/gateway/internal/handlers"
+	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/protocol"
 )
@@ -38,41 +39,22 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		Transport: transport,
 
 		ModifyResponse: func(resp *http.Response) error {
-			var method, path string
+			var path string
 			if resp.Request != nil {
-				method = resp.Request.Method
 				path = resp.Request.URL.Path
 			}
 
-			log.Printf(
-				"proxy_response category=%s status=%d upstream=%s method=%s path=%s",
-				upstreamResponseCategory(resp.StatusCode),
-				resp.StatusCode,
-				routePolicy.UpstreamURL,
-				method,
-				path,
-			)
+			log.Infof("upstream:%s,model:%s,path:%s", routePolicy.UpstreamURL, routePolicy.UpstreamModel, path)
 			return nil
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
 			switch {
 			case errors.Is(req.Context().Err(), context.Canceled):
-				log.Printf(
-					"proxy_error category=client_canceled method=%s path=%s err=%v",
-					req.Method,
-					req.URL.Path,
-					err,
-				)
+				log.Errorf("client canceled,method:%s,path:%s,err:%v", req.Method, req.URL.Path, err)
 				return
 			case errors.Is(req.Context().Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded):
-				log.Printf(
-					"proxy_error category=upstream_timeout status=%d method=%s path=%s err=%v",
-					http.StatusGatewayTimeout,
-					req.Method,
-					req.URL.Path,
-					err,
-				)
+				log.Errorf("upstream timeout, upstream:%s, err:%v", routePolicy.UpstreamURL, err)
 				handlers.SendError(w, protocol.APIError{
 					Message: "upstream timeout",
 					Type:    protocol.ErrorTypeGateway,
@@ -80,14 +62,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 				}, http.StatusGatewayTimeout)
 				return
 			default:
-				log.Printf(
-					"proxy_error category=upstream_unavailable status=%d upstream=%s method=%s path=%s err=%v",
-					http.StatusBadGateway,
-					routePolicy.UpstreamURL,
-					req.Method,
-					req.URL.Path,
-					err,
-				)
+				log.Errorf("upstream available, upstream:%s, err:%v", routePolicy.UpstreamURL, err)
 				handlers.SendError(w, protocol.APIError{
 					Message: "upstream unavailable",
 					Type:    protocol.ErrorTypeGateway,
@@ -100,6 +75,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		chatReq, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest)
 		if !ok {
+			log.Errorf("missing chatReq")
 			handlers.SendError(w, protocol.APIError{
 				Message: "missing chatReq",
 				Type:    protocol.ErrorTypeGateway,
@@ -111,6 +87,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		chatReq.Model = routePolicy.UpstreamModel
 		content, err := json.Marshal(chatReq)
 		if err != nil {
+			log.Errorf("json marshal chatReq failed. err:%v", err)
 			handlers.SendError(w, protocol.APIError{
 				Message: "encode upstream request failed",
 				Type:    protocol.ErrorTypeGateway,

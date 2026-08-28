@@ -3,6 +3,7 @@ package router
 import (
 	"net/http"
 	"shuai/gateway/internal/handlers"
+	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/protocol"
 )
@@ -20,6 +21,7 @@ func NewModelRouter(routes map[string]http.Handler) *ModelRouter {
 func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	chatReq, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest)
 	if !ok || chatReq.Model == "" {
+		log.Errorf("invalid request, chatReq:%+v", chatReq)
 		handlers.SendError(w, protocol.APIError{
 			Message: "model is required",
 			Type:    protocol.ErrorTypeInvalidRequest,
@@ -31,6 +33,7 @@ func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	target, ok := m.routes[chatReq.Model]
 	if !ok {
+		log.Errorf("model is not supported,model:%s", chatReq.Model)
 		handlers.SendError(w, protocol.APIError{
 			Message: "model is not supported",
 			Type:    protocol.ErrorTypeInvalidRequest,

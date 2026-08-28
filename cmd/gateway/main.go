@@ -1,18 +1,26 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"net/http"
+	"os"
+	"time"
+
 	"shuai/gateway/internal/config"
+	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/proxy"
 	"shuai/gateway/internal/router"
-	"time"
 
 	"github.com/spf13/cobra"
 )
 
 func main() {
+	if err := log.Init("info", "stdout"); err != nil {
+		fmt.Fprintf(os.Stderr, "Init log failed. err:%v", err)
+		return
+	}
+
 	rootCmd := &cobra.Command{
 		Use:   "gateway start [--config] config_file",
 		Short: "gateway for ai model",
@@ -40,7 +48,7 @@ func main() {
 
 	rootCmd.AddCommand(startCmd)
 	if err := rootCmd.Execute(); err != nil {
-		log.Fatal(err)
+		log.Panicf("gateway start failed. err:%v", err)
 	}
 }
 
@@ -58,7 +66,7 @@ func runGateway(config config.Config) error {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", middleware.ValidateJSONRequest(middleware.RequestTimeout(5*time.Second)(router)))
 	server.Handler = mux
-	log.Println("Starting gateway server on :8080")
+	log.Infof("Starting gateway server on :8080")
 	return server.ListenAndServe()
 }
 
@@ -80,6 +88,7 @@ loop:
 					UpstreamModel: model.RealModel,
 				}, sharedTransport)
 				if err != nil {
+					log.Errorf("BuildReverseProxy failed. err:%v", err)
 					return nil, err
 				}
 				routes[model.LogicModel] = proxy
