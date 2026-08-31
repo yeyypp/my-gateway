@@ -15,12 +15,14 @@ func TestGetGatewayRequestID(t *testing.T) {
 	const clientSuppliedID = "client-supplied-id"
 
 	var contextRequestID string
+	var forwardedRequestID string
 	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		contextRequestID, ok = r.Context().Value(RequestIDKey).(string)
 		if !ok {
 			t.Fatal("expected Gateway request ID in request context")
 		}
+		forwardedRequestID = r.Header.Get("X-Gateway-Request-ID")
 		w.WriteHeader(http.StatusNoContent)
 	})
 
@@ -46,6 +48,9 @@ func TestGetGatewayRequestID(t *testing.T) {
 	}
 	if contextRequestID != responseRequestID {
 		t.Fatalf("expected context request ID %q to match response request ID %q", contextRequestID, responseRequestID)
+	}
+	if forwardedRequestID != responseRequestID {
+		t.Fatalf("expected forwarded request ID %q to match response request ID %q", forwardedRequestID, responseRequestID)
 	}
 }
 

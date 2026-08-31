@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -78,6 +78,7 @@ func TestRunAnalyzeSendsRequestAndPrintsResponse(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Gateway-Request-ID", "gateway-success-123")
 		if err := json.NewEncoder(w).Encode(chatResp); err != nil {
 			t.Errorf("encode response: %v", err)
 		}
@@ -87,7 +88,7 @@ func TestRunAnalyzeSendsRequestAndPrintsResponse(t *testing.T) {
 	if err := runAnalyze(context.Background(), gateway.Client(), gateway.URL, filePath, model, &output); err != nil {
 		t.Fatal(err.Error())
 	}
-	if got := output.String(); got != "response from mock-a" {
+	if got := output.String(); got != "X-Gateway-Request-ID:gateway-success-123\nresponse from mock-a" {
 		t.Fatalf("unexpected output: %q", got)
 	}
 }
@@ -148,10 +149,12 @@ func TestRunAnalyzeReturnsReadableErrorForNonEnvelopeResponse(t *testing.T) {
 
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("X-Gateway-Request-ID", "gateway-error-123")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("upstream failed"))
 	}))
 	defer gateway.Close()
+	var output bytes.Buffer
 
 	err := runAnalyze(
 		context.Background(),
@@ -159,7 +162,7 @@ func TestRunAnalyzeReturnsReadableErrorForNonEnvelopeResponse(t *testing.T) {
 		gateway.URL,
 		filePath,
 		"model-a",
-		io.Discard,
+		&output,
 	)
 	if err == nil {
 		t.Fatal("expected a non-nil error")
@@ -168,5 +171,52 @@ func TestRunAnalyzeReturnsReadableErrorForNonEnvelopeResponse(t *testing.T) {
 	wantError := `gateway request failed: http_status=500 Internal Server Error, response="upstream failed"`
 	if err.Error() != wantError {
 		t.Fatalf("expected error %q, got %q", wantError, err.Error())
+	}
+	if got := output.String(); got != "X-Gateway-Request-ID:gateway-error-123\n" {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+type failFirstWriter struct {
+	err   error
+	calls int
+}
+
+func (w *failFirstWriter) Write(p []byte) (int, error) {
+	w.calls++
+	if w.calls == 1 {
+		return 0, w.err
+	}
+	return len(p), nil
+}
+
+func TestRunAnalyzeReturnsGatewayRequestIDOutputError(t *testing.T) {
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("test content"), 0644); err != nil {
+		t.Fatalf("write input file: %v", err)
+	}
+
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Gateway-Request-ID", "gateway-output-error-123")
+		if err := json.NewEncoder(w).Encode(protocol.ChatCompletionResponse{
+			Choices: []protocol.Choice{{
+				Message: protocol.Message{Role: "assistant", Content: "response"},
+			}},
+		}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	defer gateway.Close()
+
+	writeErr := errors.New("write request ID output")
+	out := &failFirstWriter{err: writeErr}
+	err := runAnalyze(context.Background(), gateway.Client(), gateway.URL, filePath, "model-a", out)
+	if err == nil {
+		t.Fatal("expected a non-nil Gateway request ID output error")
+	}
+	if out.calls != 1 {
+		t.Fatalf("expected output to stop after the request ID write failed, got %d writes", out.calls)
 	}
 }

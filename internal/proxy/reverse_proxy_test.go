@@ -140,6 +140,7 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 		userAgent          string
 		host               string
 		endToEnd           string
+		gatewayRequestID   string
 		connection         string
 		keepAlive          string
 		proxyAuthorization string
@@ -155,6 +156,7 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 			userAgent:          r.Header.Get("User-Agent"),
 			host:               r.Host,
 			endToEnd:           r.Header.Get("X-End-To-End"),
+			gatewayRequestID:   r.Header.Get("X-Gateway-Request-ID"),
 			connection:         r.Header.Get("Connection"),
 			keepAlive:          r.Header.Get("Keep-Alive"),
 			proxyAuthorization: r.Header.Get("Proxy-Authorization"),
@@ -164,6 +166,7 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 		w.Header().Set("Connection", "X-Response-Hop")
 		w.Header().Set("X-Response-Hop", "should-be-removed")
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Gateway-Request-ID", "fake-upstream-gateway-id")
 		w.Header().Set("X-Request-ID", "provider-123")
 		w.Header().Set("X-Upstream-Request-ID", "upstream-123")
 		w.WriteHeader(http.StatusOK)
@@ -236,6 +239,16 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 	gatewayRequestIDs := resp.Header.Values("X-Gateway-Request-ID")
 	if len(gatewayRequestIDs) != 1 || gatewayRequestIDs[0] == "" {
 		t.Fatalf("expected exactly one non-empty Gateway request ID, got %q", gatewayRequestIDs)
+	}
+	if gatewayRequestIDs[0] == "fake-upstream-gateway-id" {
+		t.Fatal("upstream response must not control the Gateway request ID")
+	}
+	if gotRequest.gatewayRequestID != gatewayRequestIDs[0] {
+		t.Fatalf(
+			"expected upstream request ID %q to match Gateway response ID %q",
+			gotRequest.gatewayRequestID,
+			gatewayRequestIDs[0],
+		)
 	}
 	if gatewayRequestIDs[0] == resp.Header.Get("X-Request-ID") {
 		t.Fatal("expected Gateway and provider request IDs to remain distinct")
