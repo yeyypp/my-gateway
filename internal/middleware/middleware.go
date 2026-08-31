@@ -117,6 +117,7 @@ func RequestTimeout(timeout time.Duration) func(http.Handler) http.Handler {
 func GetGatewayRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := uuid.New().String()
+		r.Header.Set("X-Gateway-Request-ID", requestID)
 		w.Header().Set("X-Gateway-Request-ID", requestID)
 		ctx := context.WithValue(r.Context(), RequestIDKey, requestID)
 

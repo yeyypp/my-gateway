@@ -42,6 +42,9 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		Transport: transport,
 
 		ModifyResponse: func(resp *http.Response) error {
+			// delete upstream same name header
+			resp.Header.Del("X-Gateway-Request-ID")
+
 			var path string
 			var requestID string
 			var ok bool

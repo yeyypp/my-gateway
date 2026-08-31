@@ -106,6 +106,14 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 	}
 	defer resp.Body.Close()
 
+	gatewayReqID := resp.Header.Get("X-Gateway-Request-ID")
+	if len(gatewayReqID) != 0 {
+		_, err := fmt.Fprintf(out, "X-Gateway-Request-ID:%s\n", gatewayReqID)
+		if err != nil {
+			return fmt.Errorf("gateway write to out failed. err:%v", err)
+		}
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		if err != nil {
