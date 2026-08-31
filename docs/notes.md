@@ -133,3 +133,98 @@ Handler 链，直到请求处理完成后才返回。它不会自动启动新的
 
 如果直接解析完就丢掉，下游就拿不到数据了。
 
+## 响应传递
+
+准确地说：
+
+- Middleware 和 ReverseProxy 接收到的是同一个客户端 `http.ResponseWriter`。
+- 但 ReverseProxy 从上游获得的 `*http.Response` 是另一个对象。
+- ReverseProxy 的工作之一，就是把上游 `*http.Response` 的状态、Header 和 Body 写进这个共同的 `ResponseWriter`。
+
+调用过程可以理解为：
+
+```text
+客户端
+  ↓ Request
+Request ID Middleware
+  ↓ 同一个 r、同一个 w
+Validate Middleware
+  ↓
+Router
+  ↓
+ReverseProxy
+  ↓ 新建对上游的 HTTP 请求
+Upstream
+  ↓ 返回独立的 *http.Response
+ReverseProxy 把它复制到原来的 w
+  ↓
+客户端收到响应
+```
+
+你的 Middleware 实际执行的是：
+
+```go
+w.Header().Set("X-Gateway-Request-ID", requestID)
+next.ServeHTTP(w, requestWithContext)
+```
+
+`Header().Set` 此时只是修改 `ResponseWriter` 内部的 Header 集合，并没有立即把响应发送给客户端。
+
+之后，同一个 `w` 被逐层传给 Router 和 ReverseProxy。ReverseProxy 最终执行类似下面的行为：
+
+```text
+把上游 Header 复制到 w.Header()
+调用 w.WriteHeader(上游状态码)
+把上游 Body 写入 w
+```
+
+第一次调用 `WriteHeader` 或 `Write` 时，Header 才会正式提交给客户端。由于 Request ID Middleware 已经提前把 Gateway ID 放进了 `w.Header()`，所以提交响应时它自然会一起发送。
+
+响应不是这样“逐层返回新对象”的：
+
+```text
+Proxy Response → Router Response → Middleware Response
+```
+
+而是大家共同操作一个面向客户端的 `ResponseWriter`。
+
+需要注意三个边界：
+
+1. 内层仍然可以覆盖 Header
+
+如果 ReverseProxy 或其他 Handler 执行：
+
+```go
+w.Header().Set("X-Gateway-Request-ID", anotherID)
+```
+
+它会覆盖 Middleware 设置的值；使用 `Add` 则可能产生多个值。所以这个 Header 要有唯一写入者。
+
+2. Middleware 不能等 `next` 返回后才设置普通响应 Header
+
+下面这种写法通常太晚：
+
+```go
+next.ServeHTTP(w, r)
+w.Header().Set(...)
+```
+
+因为 ReverseProxy 很可能已经调用了 `WriteHeader` 或写入 Body，响应 Header 已经提交。
+
+3. `ModifyResponse` 操作的不是客户端 `ResponseWriter`
+
+`ModifyResponse` 收到的是上游返回的 `*http.Response`。ReverseProxy 随后才会把它复制到客户端的 `w`。因此：
+
+```text
+w.Header()
+```
+
+代表 Gateway 给客户端的响应 Header；
+
+```text
+resp.Header
+```
+
+在 `ModifyResponse` 中代表上游响应 Header。
+
+所以你现在把 `X-Gateway-Request-ID` 放在最外层 Middleware、调用 `next` 之前，是正确的：它能覆盖所有进入该 Middleware 的成功和失败路径，同时保持 Header 的唯一所有权。

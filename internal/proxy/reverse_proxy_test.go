@@ -94,7 +94,7 @@ func TestUpstreamUnavailable(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	proxy := newTestProxy(t, upstream.URL)
+	proxy := middleware.GetGatewayRequestID(newTestProxy(t, upstream.URL))
 
 	upstream.Close() // Close the upstream server to simulate unavailability
 
@@ -109,6 +109,10 @@ func TestUpstreamUnavailable(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("expected status code %d, got %d", http.StatusBadGateway, resp.StatusCode)
+	}
+	requestIDs := resp.Header.Values("X-Gateway-Request-ID")
+	if len(requestIDs) != 1 || requestIDs[0] == "" {
+		t.Fatalf("expected exactly one non-empty Gateway request ID, got %q", requestIDs)
 	}
 
 	var respJSON protocol.ErrorResponse
@@ -160,6 +164,7 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 		w.Header().Set("Connection", "X-Response-Hop")
 		w.Header().Set("X-Response-Hop", "should-be-removed")
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Request-ID", "provider-123")
 		w.Header().Set("X-Upstream-Request-ID", "upstream-123")
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -170,7 +175,7 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 		t.Fatalf("failed to parse upstream URL: %v", err)
 	}
 
-	proxy := newTestProxy(t, upstream.URL)
+	proxy := middleware.GetGatewayRequestID(newTestProxy(t, upstream.URL))
 
 	req := httptest.NewRequest(http.MethodPost, "http://gateway.example/process", strings.NewReader(`{"mode":"ok"}`))
 	req.Header.Set("Connection", "X-Debug-Hop")
@@ -225,6 +230,16 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 	if val := resp.Header.Get("X-Upstream-Request-ID"); val != "upstream-123" {
 		t.Errorf("expected response X-Upstream-Request-ID %q, got %q", "upstream-123", val)
 	}
+	if val := resp.Header.Get("X-Request-ID"); val != "provider-123" {
+		t.Errorf("expected provider X-Request-ID %q, got %q", "provider-123", val)
+	}
+	gatewayRequestIDs := resp.Header.Values("X-Gateway-Request-ID")
+	if len(gatewayRequestIDs) != 1 || gatewayRequestIDs[0] == "" {
+		t.Fatalf("expected exactly one non-empty Gateway request ID, got %q", gatewayRequestIDs)
+	}
+	if gatewayRequestIDs[0] == resp.Header.Get("X-Request-ID") {
+		t.Fatal("expected Gateway and provider request IDs to remain distinct")
+	}
 	if val := resp.Header.Get("X-Response-Hop"); val != "" {
 		t.Errorf("hop-by-hop response header X-Response-Hop should not be forwarded, got %q", val)
 	}
@@ -241,7 +256,9 @@ func TestRequestTimeout(t *testing.T) {
 
 	proxy := newTestProxy(t, upstream.URL)
 
-	timeoutHandler := middleware.ValidateJSONRequest(middleware.RequestTimeout(300 * time.Millisecond)(proxy))
+	timeoutHandler := middleware.GetGatewayRequestID(
+		middleware.ValidateJSONRequest(middleware.RequestTimeout(300 * time.Millisecond)(proxy)),
+	)
 
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(
@@ -285,6 +302,10 @@ func TestRequestTimeout(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("status code should be 504")
+	}
+	requestIDs := resp.Header.Values("X-Gateway-Request-ID")
+	if len(requestIDs) != 1 || requestIDs[0] == "" {
+		t.Fatalf("expected exactly one non-empty Gateway request ID, got %q", requestIDs)
 	}
 
 }
