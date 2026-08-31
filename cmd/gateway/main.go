@@ -68,7 +68,7 @@ func runGateway(config config.Config) error {
 		IdleTimeout:  30 * time.Second,
 	}
 	mux := http.NewServeMux()
-	mux.Handle("POST /v1/chat/completions", middleware.ValidateJSONRequest(middleware.RequestTimeout(5*time.Second)(router)))
+	mux.Handle("POST /v1/chat/completions", middleware.GetGatewayRequestID(middleware.ValidateJSONRequest(middleware.RequestTimeout(5*time.Second)(router))))
 	server.Handler = mux
 	log.Info("gateway server starting", zap.String("addr", server.Addr))
 	return server.ListenAndServe()

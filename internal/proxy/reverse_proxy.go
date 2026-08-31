@@ -43,26 +43,38 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 
 		ModifyResponse: func(resp *http.Response) error {
 			var path string
+			var requestID string
+			var ok bool
 			if resp.Request != nil {
 				path = resp.Request.URL.Path
+				requestID, ok = resp.Request.Context().Value(middleware.RequestIDKey).(string)
+				if !ok {
+					log.Error("get requestID from req context failed")
+				}
 			}
 
 			log.Info("upstream response received",
 				zap.String("upstream", target.Host),
 				zap.String("model", routePolicy.UpstreamModel),
 				zap.String("path", path),
+				zap.String("request-id", requestID),
 			)
 			return nil
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
 			var netErr net.Error
+			requestID, ok := req.Context().Value(middleware.RequestIDKey).(string)
+			if !ok {
+				log.Error("get requestID from req context failed")
+			}
 			switch {
 			case errors.Is(req.Context().Err(), context.Canceled):
 				log.Error("client canceled request",
 					zap.String("method", req.Method),
 					zap.String("path", req.URL.Path),
 					zap.Error(err),
+					zap.String("request-id", requestID),
 				)
 				return
 			case errors.Is(req.Context().Err(), context.DeadlineExceeded),
@@ -71,6 +83,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 				log.Error("upstream request timed out",
 					zap.String("upstream", target.Host),
 					zap.Error(err),
+					zap.String("request-id", requestID),
 				)
 				handlers.SendError(w, protocol.APIError{
 					Message: "upstream timeout",
@@ -82,6 +95,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 				log.Error("upstream unavailable",
 					zap.String("upstream", target.Host),
 					zap.Error(err),
+					zap.String("request-id", requestID),
 				)
 				handlers.SendError(w, protocol.APIError{
 					Message: "upstream unavailable",
@@ -93,9 +107,14 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID, ok := r.Context().Value(middleware.RequestIDKey).(string)
+		if !ok {
+			log.Error("get requestID from req context failed")
+		}
+
 		chatReq, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest)
 		if !ok {
-			log.Error("validated request missing from context")
+			log.Error("validated request missing from context", zap.String("request-id", requestID))
 			handlers.SendError(w, protocol.APIError{
 				Message: "missing chatReq",
 				Type:    protocol.ErrorTypeGateway,
@@ -108,7 +127,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		content, err := json.Marshal(chatReq)
 		if err != nil {
 			log.Error("encode upstream request failed",
-				zap.Error(err),
+				zap.Error(err), zap.String("request-id", requestID),
 			)
 			handlers.SendError(w, protocol.APIError{
 				Message: "encode upstream request failed",
