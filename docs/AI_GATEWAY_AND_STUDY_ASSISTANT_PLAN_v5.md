@@ -117,8 +117,8 @@
 - 当前阶段：阶段 A，最小 AI Gateway
 - 当前主题：W2 模型协议、多上游与路由
 - 当前里程碑：W2-M3 可追踪、可运行与阶段收口
-- 状态：进行中；W2-M2 已完成，W2-M3 的非流式错误语义与 Zap 结构化日志基线已完成，开始建立 Request ID 关联
-- 最近代码进度更新时间：2026-08-28
+- 状态：进行中；W2-M2 已完成，W2-M3 已完成非流式错误与日志基线、Gateway Request ID 传播和健康检查，待补齐跨组件日志关联、运行文档与阶段演示
+- 最近代码进度更新时间：2026-09-01
 - 当前分支：master
 
 已经验证：
@@ -140,16 +140,18 @@
 - Gateway 与 Mock 已统一使用 Zap 输出独立结构化字段，日志包装在未初始化时安全，caller 指向真实业务调用位置，且不记录完整 Chat Completions 请求内容；
 - 非流式失败已区分客户端请求、Gateway 调用和 Upstream 响应语义；超时由 Proxy 单点归类，连接失败返回 502，Deadline 或网络超时返回 504；
 - Study Assistant 的失败输出保留 HTTP 状态和完整可用的错误 envelope，非统一错误响应也能返回有界、可理解的线索；2026-08-28 执行相关测试、全量测试、Vet 和 Build，全部通过。
+- Gateway 为每次 Chat Completions 请求生成独立的 `X-Gateway-Request-ID`，写入 Context、转发请求和客户端响应；客户端伪造的同名 Header 不会被采用，上游响应的同名 Header 会在复制给客户端前删除，Provider 自有 Request ID 保持独立；Study Assistant 可展示 Gateway Request ID，相关成功、校验失败、代理失败和 Header 所有权行为已有自动化测试；
+- Gateway 提供不依赖 Upstream 的 `/healthz` 和按配置主动探测的 `/readyz`，Mock 提供 `/readyz`；`health_url` 为可选且在配置加载时校验，未配置的 Upstream 不参与 readiness，至少一个被探测 Upstream 可用时返回 200，全部不可用时返回 503，故障恢复和请求取消已有自动化测试；2026-09-01 执行相关测试、全量测试、Race、Vet 和 Build，全部通过。
 
 当前待完成的工作单元：
 
-1. 建立请求标识的最小闭环：区分客户端提供的标识、Gateway 自己生成的标识和上游返回的标识，让一次请求能在客户端响应、Gateway 与 Mock 日志中被关联，同时保持现有敏感信息边界。
+1. 补齐请求追踪的日志关联闭环：将可选客户端 Request ID 与 Gateway Request ID 分开保存，让 Gateway 请求完成日志和 Mock 请求日志能够用同一个 Gateway Request ID 关联，并覆盖 method、path、model、upstream、status 和 latency，同时保持现有敏感信息边界。
 
 下一次可见成果：
 
-> 发起一次 Study Assistant 请求后，可以从客户端响应、Gateway 和 Mock 的结构化日志中确认它们属于同一次调用，且客户端、Gateway 与 Upstream 的 Request ID 不会互相覆盖。
+> 发起一次 Study Assistant 请求后，可以从客户端输出、Gateway 请求完成日志和 Mock 请求日志中找到同一个 Gateway Request ID；客户端 Request ID 和 Provider Request ID 仍是独立字段。
 
-当前没有外部阻塞；W2-M3 的请求追踪、健康检查、运行文档和阶段演示尚待完成。
+当前没有外部阻塞；W2-M3 的健康检查已完成，请求 ID 的 Header 传播已完成，但跨组件日志关联、可选客户端 ID、运行文档和阶段演示尚待完成。
 
 ## 1.2 已完成摘要
 
@@ -865,6 +867,7 @@ pprof 不要求为了计划强行制造问题。若 Benchmark 或故障实验发
 
 | 日期 | 版本 | 调整 | 原因 |
 |---|---|---|---|
+| 2026-09-01 | v5 | 记录 Gateway Request ID 的生成、传播、响应回传与 Header 所有权保护已经完成；健康检查及其配置、并发探测、恢复和取消测试已经完成；下一工作单元转为补齐跨组件日志关联 | 让状态卡与已提交代码和测试证据一致，同时不在日志关联、文档和阶段演示完成前提前勾选 W2-M3 |
 | 2026-08-28 | v5 | 完成 Gateway 与 Mock 的 Zap 结构化日志、非流式错误责任边界、单点超时归类和 Study Assistant 错误展示，下一工作单元进入 Request ID 关联 | 用真实调用暴露的问题建立可读、可测试的诊断基线，再增加跨组件关联能力 |
 | 2026-08-27 | v5 | 将 Study Assistant 明确为 Gateway 的参考客户端和验证载体；W2-M2 改为真实上游端到端验证并根据 Ollama 证据收口；W2-M3 先处理错误责任边界、Zap 结构化日志和客户端错误信息，再接入 Request ID | 避免制造虚假产品需求，并优先解决真实 Ollama 调用暴露出的超时诊断困难 |
 | 2026-08-25 | v5 | 教学模式改为低提示度、结果导向和渐进提示；首次任务只给目标、边界、可见结果、验收与整体验证，不再默认展开目录、类型、函数签名、伪代码和逐项实现；合并 W2-M2 的配置解析与启动组装为一个由用户自主设计的完整工作单元 | 保留用户独立分析和方案选择的空间，让讨论由实现中真实出现的问题驱动 |
