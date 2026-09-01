@@ -66,6 +66,7 @@ func NewMockServer(config Config) *MockServer {
 	mockAPIHandler := handlers.NewMockAPIHandler(config.Name, config.Model)
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", mockAPIHandler)
+	mux.HandleFunc("GET /readyz", mockAPIHandler.CheckHealth)
 	server.Handler = mux
 
 	mockServer := &MockServer{

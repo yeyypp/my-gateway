@@ -25,8 +25,9 @@ type Model struct {
 }
 
 type Upstream struct {
-	Name    string `yaml:"name"`
-	BaseURL string `yaml:"base_url"`
+	Name      string `yaml:"name"`
+	BaseURL   string `yaml:"base_url"`
+	HealthURL string `yaml:"health_url"`
 }
 
 func Load(configFile string) (Config, error) {

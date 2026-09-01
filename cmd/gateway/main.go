@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"shuai/gateway/internal/config"
+	"shuai/gateway/internal/handlers"
 	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/proxy"
@@ -69,6 +70,9 @@ func runGateway(config config.Config) error {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", middleware.GetGatewayRequestID(middleware.ValidateJSONRequest(middleware.RequestTimeout(5*time.Second)(router))))
+	mux.HandleFunc("GET /healthz", HealthCheck)
+	readyCheck := handlers.NewReadyCheck(config.Upstreams)
+	mux.HandleFunc("GET /readyz", readyCheck.CheckUpstreams)
 	server.Handler = mux
 	log.Info("gateway server starting", zap.String("addr", server.Addr))
 	return server.ListenAndServe()
@@ -101,4 +105,8 @@ loop:
 		}
 	}
 	return router.NewModelRouter(routes), nil
+}
+
+func HealthCheck(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
 }

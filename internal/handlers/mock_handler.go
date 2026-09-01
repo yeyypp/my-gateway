@@ -60,3 +60,7 @@ func (m *MockAPIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	SendJSON(w, resp)
 }
+
+func (m *MockAPIHandler) CheckHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}
