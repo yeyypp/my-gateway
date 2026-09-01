@@ -43,6 +43,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		Transport: transport,
 
 		ModifyResponse: func(resp *http.Response) error {
+			// 此处删除的是从upstream收到响应中的id，不影响middleware在外层设定的id
 			resp.Header.Del(protocol.HeaderGatewayRequestID)
 
 			fields := make([]zap.Field, 0, 9)

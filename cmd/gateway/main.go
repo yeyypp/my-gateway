@@ -64,12 +64,12 @@ func runGateway(config config.Config) error {
 	}
 	server := &http.Server{
 		Addr:         ":8080",
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  30 * time.Second,
 	}
 	mux := http.NewServeMux()
-	mux.Handle("POST /v1/chat/completions", middleware.GetGatewayRequestID(middleware.LogRequest(middleware.ValidateJSONRequest(middleware.RequestTimeout(10*time.Second)(router)))))
+	mux.Handle("POST /v1/chat/completions", middleware.GetGatewayRequestID(middleware.LogRequest(middleware.ValidateJSONRequest(middleware.RequestTimeout(30*time.Second)(router)))))
 	mux.HandleFunc("GET /healthz", HealthCheck)
 	readyCheck := handlers.NewReadyCheck(config.Upstreams)
 	mux.HandleFunc("GET /readyz", readyCheck.CheckUpstreams)
@@ -83,7 +83,7 @@ func buildRouter(config config.Config) (*router.ModelRouter, error) {
 		MaxIdleConns:          5,
 		MaxIdleConnsPerHost:   2,
 		IdleConnTimeout:       30 * time.Second,
-		ResponseHeaderTimeout: 5 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
 	routes := make(map[string]http.Handler)

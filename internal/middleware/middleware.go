@@ -48,6 +48,13 @@ func (w *responseStatusWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
+func (w *responseStatusWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+		return
+	}
+}
+
 func GetReqIDFromCTX(ctx context.Context) []zap.Field {
 	fields := make([]zap.Field, 0, 2)
 	if requestID, ok := ctx.Value(RequestIDKey).(string); ok && requestID != "" {
@@ -116,18 +123,6 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 				Type:    protocol.ErrorTypeInvalidRequest,
 				Param:   "messages",
 				Code:    protocol.ErrorCodeInvalidValue,
-			}, http.StatusBadRequest)
-			return
-		}
-
-		if chatReq.Stream {
-			fields := append(GetReqIDFromCTX(r.Context()), zap.Bool("stream", chatReq.Stream))
-			log.Error("streaming is not supported", fields...)
-			handlers.SendError(w, protocol.APIError{
-				Message: "streaming is not supported",
-				Type:    protocol.ErrorTypeInvalidRequest,
-				Param:   "stream",
-				Code:    protocol.ErrorCodeUnsupportedValue,
 			}, http.StatusBadRequest)
 			return
 		}
