@@ -40,6 +40,7 @@ func NewReadyCheck(upstreams []config.Upstream) *ReadyCheck {
 }
 
 func (rc *ReadyCheck) CheckUpstreams(w http.ResponseWriter, r *http.Request) {
+	log.Info("get ready check req")
 	numOfUpstreams := len(rc.upstreams)
 	if numOfUpstreams == 0 {
 		w.WriteHeader(http.StatusOK)
