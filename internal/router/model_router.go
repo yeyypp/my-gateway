@@ -22,14 +22,9 @@ func NewModelRouter(routes map[string]http.Handler) *ModelRouter {
 }
 
 func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	requestID, ok := r.Context().Value(middleware.RequestIDKey).(string)
-	if !ok {
-		log.Error("get requestID from req context failed")
-	}
-
 	chatReq, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest)
 	if !ok || chatReq.Model == "" {
-		log.Error("model is required", zap.String("request-id", requestID))
+		log.Error("model is required", middleware.GetReqIDFromCTX(r.Context())...)
 		handlers.SendError(w, protocol.APIError{
 			Message: "model is required",
 			Type:    protocol.ErrorTypeInvalidRequest,
@@ -41,10 +36,8 @@ func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	target, ok := m.routes[chatReq.Model]
 	if !ok {
-		log.Error("model is not supported",
-			zap.String("logical_model", chatReq.Model),
-			zap.String("request-id", requestID),
-		)
+		fields := append(middleware.GetReqIDFromCTX(r.Context()), zap.String("logical_model", chatReq.Model))
+		log.Error("model is not supported", fields...)
 		handlers.SendError(w, protocol.APIError{
 			Message: "model is not supported",
 			Type:    protocol.ErrorTypeInvalidRequest,

@@ -228,3 +228,121 @@ resp.Header
 在 `ModifyResponse` 中代表上游响应 Header。
 
 所以你现在把 `X-Gateway-Request-ID` 放在最外层 Middleware、调用 `next` 之前，是正确的：它能覆盖所有进入该 Middleware 的成功和失败路径，同时保持 Header 的唯一所有权。
+
+## ResponseWriter包装器
+不加 `Unwrap`，当前的普通非流式请求大概率仍能正常工作，所以编译器和现有测试都可能不会提醒你。
+
+原因是 `http.ResponseWriter` 接口本身只有三个方法：
+
+```go
+type ResponseWriter interface {
+    Header() Header
+    Write([]byte) (int, error)
+    WriteHeader(statusCode int)
+}
+```
+
+你的包装器已经实现了这些方法，因此编译完全没问题。
+
+问题会在使用额外能力时出现。
+
+### 不加时可能发生什么
+
+底层 Writer 可能还支持：
+
+```go
+http.Flusher
+http.Hijacker
+http.Pusher
+```
+
+以及 `ResponseController` 提供的 Flush、Hijack、设置 Deadline 等能力。
+
+包装以后：
+
+```text
+底层 Writer：支持 Write + Flush
+包装器：只暴露 Write
+```
+
+调用方看到的只是包装器，于是可能认为 Flush 不受支持。
+
+例如未来实现 SSE：
+
+```go
+controller := http.NewResponseController(w)
+err := controller.Flush()
+```
+
+没有 `Unwrap` 时，可能得到：
+
+```go
+errors.Is(err, http.ErrNotSupported) == true
+```
+
+结果可能表现为：
+
+- SSE 数据不能及时刷新；
+- 客户端一直等到响应结束才收到全部内容；
+- Reverse Proxy 的流式转发行为异常；
+- WebSocket 或连接接管失败；
+- Deadline 等高级控制不可用。
+
+而普通 JSON 响应通常不会暴露问题。
+
+### 加上之后
+
+```go
+func (w *responseStatusWriter) Unwrap() http.ResponseWriter {
+    return w.ResponseWriter
+}
+```
+
+`ResponseController` 可以继续向内寻找：
+
+```text
+responseStatusWriter
+    ↓ Unwrap
+底层 Writer
+    ↓
+Flush / Hijack / Deadline
+```
+
+### 为什么编译器不会提醒
+
+因为 Flush、Hijack 等不属于 `http.ResponseWriter` 的必需方法，而是运行时可选能力。
+
+编译器只能确认：
+
+```go
+var _ http.ResponseWriter = (*responseStatusWriter)(nil)
+```
+
+无法知道后续业务是否需要流式刷新或连接接管。
+
+### 实际记忆规则
+
+以后只要包装 `http.ResponseWriter`，可以先问一句：
+
+> 这个包装器是否可能位于 ReverseProxy、SSE、WebSocket 或其他流式 Handler 外层？
+
+如果可能，通常应当提供：
+
+```go
+func (w *wrapper) Unwrap() http.ResponseWriter {
+    return w.ResponseWriter
+}
+```
+
+但还要注意：`Unwrap` 主要帮助 `http.ResponseController`。如果第三方代码直接执行：
+
+```go
+flusher, ok := w.(http.Flusher)
+```
+
+即使提供了 `Unwrap`，这个断言仍可能失败。此时需要包装器显式实现 `Flush`，或者让调用方改用 `http.ResponseController`。
+
+因此在你当前项目里：
+
+- W2 非流式请求：没有 `Unwrap` 可能也看不出问题。
+- 后续 W3 SSE：`Unwrap` 会成为重要的兼容性保障。

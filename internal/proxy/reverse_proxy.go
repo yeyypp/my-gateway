@@ -37,57 +37,55 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		Rewrite: func(preq *httputil.ProxyRequest) {
 			preq.SetURL(target)
 			preq.SetXForwarded()
+			preq.Out.Header.Del(protocol.HeaderClientRequestID)
 		},
 
 		Transport: transport,
 
 		ModifyResponse: func(resp *http.Response) error {
-			// delete upstream same name header
-			resp.Header.Del("X-Gateway-Request-ID")
+			resp.Header.Del(protocol.HeaderGatewayRequestID)
 
-			var path string
-			var requestID string
-			var ok bool
+			fields := make([]zap.Field, 0, 9)
 			if resp.Request != nil {
-				path = resp.Request.URL.Path
-				requestID, ok = resp.Request.Context().Value(middleware.RequestIDKey).(string)
-				if !ok {
-					log.Error("get requestID from req context failed")
+				fields = append(fields, middleware.GetReqIDFromCTX(resp.Request.Context())...)
+				fields = append(fields,
+					zap.String("method", resp.Request.Method),
+					zap.String("path", resp.Request.URL.Path),
+				)
+				if chatReq, ok := resp.Request.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest); ok {
+					fields = append(fields, zap.String("logical_model", chatReq.Model))
 				}
 			}
-
-			log.Info("upstream response received",
+			fields = append(fields,
 				zap.String("upstream", target.Host),
 				zap.String("model", routePolicy.UpstreamModel),
-				zap.String("path", path),
-				zap.String("request-id", requestID),
+				zap.Int("status", resp.StatusCode),
 			)
+			if upstreamRequestID := resp.Header.Get(protocol.HeaderUpstreamRequestID); upstreamRequestID != "" {
+				fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
+			}
+
+			log.Info("upstream response received", fields...)
 			return nil
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
 			var netErr net.Error
-			requestID, ok := req.Context().Value(middleware.RequestIDKey).(string)
-			if !ok {
-				log.Error("get requestID from req context failed")
-			}
+			fields := append(middleware.GetReqIDFromCTX(req.Context()),
+				zap.String("method", req.Method),
+				zap.String("path", req.URL.Path),
+				zap.String("upstream", target.Host),
+				zap.String("model", routePolicy.UpstreamModel),
+				zap.Error(err),
+			)
 			switch {
 			case errors.Is(req.Context().Err(), context.Canceled):
-				log.Error("client canceled request",
-					zap.String("method", req.Method),
-					zap.String("path", req.URL.Path),
-					zap.Error(err),
-					zap.String("request-id", requestID),
-				)
+				log.Error("client canceled request", fields...)
 				return
 			case errors.Is(req.Context().Err(), context.DeadlineExceeded),
 				errors.Is(err, context.DeadlineExceeded),
 				errors.As(err, &netErr) && netErr.Timeout():
-				log.Error("upstream request timed out",
-					zap.String("upstream", target.Host),
-					zap.Error(err),
-					zap.String("request-id", requestID),
-				)
+				log.Error("upstream request timed out", fields...)
 				handlers.SendError(w, protocol.APIError{
 					Message: "upstream timeout",
 					Type:    protocol.ErrorTypeGateway,
@@ -95,11 +93,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 				}, http.StatusGatewayTimeout)
 				return
 			default:
-				log.Error("upstream unavailable",
-					zap.String("upstream", target.Host),
-					zap.Error(err),
-					zap.String("request-id", requestID),
-				)
+				log.Error("upstream unavailable", fields...)
 				handlers.SendError(w, protocol.APIError{
 					Message: "upstream unavailable",
 					Type:    protocol.ErrorTypeGateway,
@@ -110,14 +104,9 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID, ok := r.Context().Value(middleware.RequestIDKey).(string)
-		if !ok {
-			log.Error("get requestID from req context failed")
-		}
-
 		chatReq, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest)
 		if !ok {
-			log.Error("validated request missing from context", zap.String("request-id", requestID))
+			log.Error("validated request missing from context", middleware.GetReqIDFromCTX(r.Context())...)
 			handlers.SendError(w, protocol.APIError{
 				Message: "missing chatReq",
 				Type:    protocol.ErrorTypeGateway,
@@ -129,9 +118,8 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		chatReq.Model = routePolicy.UpstreamModel
 		content, err := json.Marshal(chatReq)
 		if err != nil {
-			log.Error("encode upstream request failed",
-				zap.Error(err), zap.String("request-id", requestID),
-			)
+			fields := append(middleware.GetReqIDFromCTX(r.Context()), zap.Error(err))
+			log.Error("encode upstream request failed", fields...)
 			handlers.SendError(w, protocol.APIError{
 				Message: "encode upstream request failed",
 				Type:    protocol.ErrorTypeGateway,

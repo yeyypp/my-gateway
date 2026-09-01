@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"shuai/gateway/internal/protocol"
+	"os"
 	"strings"
 	"testing"
+
+	"shuai/gateway/internal/log"
+	"shuai/gateway/internal/protocol"
 )
 
 func TestRejectsInvalidJSON(t *testing.T) {
@@ -44,6 +47,11 @@ func TestRejectsInvalidJSON(t *testing.T) {
 }
 
 func TestNormalRequest(t *testing.T) {
+	logPath := t.TempDir() + "/mock.log"
+	if err := log.Init("info", logPath); err != nil {
+		t.Fatalf("initialize logger: %v", err)
+	}
+
 	handler := NewMockAPIHandler("mock-a", "model-a")
 	chatReq := protocol.ChatCompletionRequest{
 		Model: "model-a",
@@ -58,6 +66,7 @@ func TestNormalRequest(t *testing.T) {
 		t.Fatalf("failed to marshal chat request: %v", err)
 	}
 	req := httptest.NewRequest("POST", "http://test", bytes.NewBuffer(byteContents))
+	req.Header.Set(protocol.HeaderGatewayRequestID, "gateway-123")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
@@ -66,6 +75,10 @@ func TestNormalRequest(t *testing.T) {
 
 	if result.StatusCode != http.StatusOK {
 		t.Fatalf("expected status code %d, got %d", http.StatusOK, result.StatusCode)
+	}
+	upstreamRequestID := result.Header.Get(protocol.HeaderUpstreamRequestID)
+	if upstreamRequestID == "" {
+		t.Fatal("expected a non-empty upstream request ID")
 	}
 	if got := result.Header.Get("Content-Type"); got != "application/json" {
 		t.Fatalf("expected Content-Type %q, got %q", "application/json", got)
@@ -103,6 +116,39 @@ func TestNormalRequest(t *testing.T) {
 	}
 	if choice.FinishReason != "stop" {
 		t.Fatalf("expected finish reason %q, got %q", "stop", choice.FinishReason)
+	}
+
+	if err := log.Sync(); err != nil {
+		t.Fatalf("sync logger: %v", err)
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(content, &entry); err != nil {
+		t.Fatalf("decode log: %v", err)
+	}
+	if got := entry["msg"]; got != "mock request completed" {
+		t.Fatalf("expected mock completion log, got %#v", got)
+	}
+	if got := entry["gateway_request_id"]; got != "gateway-123" {
+		t.Fatalf("expected Gateway request ID %q, got %#v", "gateway-123", got)
+	}
+	if got := entry["upstream_request_id"]; got != upstreamRequestID {
+		t.Fatalf("expected upstream request ID %q, got %#v", upstreamRequestID, got)
+	}
+	if got := entry["upstream"]; got != "mock-a" {
+		t.Fatalf("expected upstream %q, got %#v", "mock-a", got)
+	}
+	if got := entry["model"]; got != "model-a" {
+		t.Fatalf("expected model %q, got %#v", "model-a", got)
+	}
+	if got := entry["status"]; got != float64(http.StatusOK) {
+		t.Fatalf("expected status %d, got %#v", http.StatusOK, got)
+	}
+	if _, ok := entry["latency"]; !ok {
+		t.Fatal("expected latency field")
 	}
 }
 

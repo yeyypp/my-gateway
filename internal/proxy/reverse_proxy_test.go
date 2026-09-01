@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/protocol"
 )
@@ -141,6 +143,7 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 		host               string
 		endToEnd           string
 		gatewayRequestID   string
+		clientRequestID    string
 		connection         string
 		keepAlive          string
 		proxyAuthorization string
@@ -157,6 +160,7 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 			host:               r.Host,
 			endToEnd:           r.Header.Get("X-End-To-End"),
 			gatewayRequestID:   r.Header.Get("X-Gateway-Request-ID"),
+			clientRequestID:    r.Header.Get(protocol.HeaderClientRequestID),
 			connection:         r.Header.Get("Connection"),
 			keepAlive:          r.Header.Get("Keep-Alive"),
 			proxyAuthorization: r.Header.Get("Proxy-Authorization"),
@@ -179,6 +183,10 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 	}
 
 	proxy := middleware.GetGatewayRequestID(newTestProxy(t, upstream.URL))
+	logPath := t.TempDir() + "/gateway.log"
+	if err := log.Init("info", logPath); err != nil {
+		t.Fatalf("initialize logger: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "http://gateway.example/process", strings.NewReader(`{"mode":"ok"}`))
 	req.Header.Set("Connection", "X-Debug-Hop")
@@ -189,6 +197,7 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer test-secret")
 	req.Header.Set("User-Agent", "gateway-header-test")
 	req.Header.Set("X-End-To-End", "end-to-end-value")
+	req.Header.Set(protocol.HeaderClientRequestID, "client-123")
 
 	recorder := httptest.NewRecorder()
 	proxy.ServeHTTP(recorder, req)
@@ -213,6 +222,9 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 	}
 	if gotRequest.endToEnd != "end-to-end-value" {
 		t.Errorf("expected upstream X-End-To-End %q, got %q", "end-to-end-value", gotRequest.endToEnd)
+	}
+	if gotRequest.clientRequestID != "" {
+		t.Fatalf("client request ID must not be forwarded upstream, got %q", gotRequest.clientRequestID)
 	}
 
 	removedRequestHeaders := map[string]string{
@@ -255,6 +267,33 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 	}
 	if val := resp.Header.Get("X-Response-Hop"); val != "" {
 		t.Errorf("hop-by-hop response header X-Response-Hop should not be forwarded, got %q", val)
+	}
+
+	if err := log.Sync(); err != nil {
+		t.Fatalf("sync logger: %v", err)
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(content, &entry); err != nil {
+		t.Fatalf("decode log: %v", err)
+	}
+	if got := entry["msg"]; got != "upstream response received" {
+		t.Fatalf("expected upstream response log, got %#v", got)
+	}
+	if got := entry["gateway_request_id"]; got != gatewayRequestIDs[0] {
+		t.Fatalf("expected Gateway request ID %q in log, got %#v", gatewayRequestIDs[0], got)
+	}
+	if got := entry["client_request_id"]; got != "client-123" {
+		t.Fatalf("expected client request ID %q in log, got %#v", "client-123", got)
+	}
+	if got := entry["upstream_request_id"]; got != "provider-123" {
+		t.Fatalf("expected upstream request ID %q in log, got %#v", "provider-123", got)
+	}
+	if got := entry["status"]; got != float64(http.StatusOK) {
+		t.Fatalf("expected status %d in log, got %#v", http.StatusOK, got)
 	}
 }
 

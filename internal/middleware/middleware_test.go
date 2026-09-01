@@ -5,16 +5,22 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
+	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/protocol"
 )
 
 func TestGetGatewayRequestID(t *testing.T) {
-	const clientSuppliedID = "client-supplied-id"
+	const (
+		forgedGatewayID = "client-supplied-gateway-id"
+		clientRequestID = "client-request-id"
+	)
 
 	var contextRequestID string
+	var contextClientRequestID string
 	var forwardedRequestID string
 	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var ok bool
@@ -22,12 +28,17 @@ func TestGetGatewayRequestID(t *testing.T) {
 		if !ok {
 			t.Fatal("expected Gateway request ID in request context")
 		}
-		forwardedRequestID = r.Header.Get("X-Gateway-Request-ID")
+		contextClientRequestID, ok = r.Context().Value(ClientRequestIDKey).(string)
+		if !ok {
+			t.Fatal("expected client request ID in request context")
+		}
+		forwardedRequestID = r.Header.Get(protocol.HeaderGatewayRequestID)
 		w.WriteHeader(http.StatusNoContent)
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req.Header.Set("X-Gateway-Request-ID", clientSuppliedID)
+	req.Header.Set(protocol.HeaderGatewayRequestID, forgedGatewayID)
+	req.Header.Set(protocol.HeaderClientRequestID, clientRequestID)
 	recorder := httptest.NewRecorder()
 
 	GetGatewayRequestID(downstream).ServeHTTP(recorder, req)
@@ -35,7 +46,7 @@ func TestGetGatewayRequestID(t *testing.T) {
 	result := recorder.Result()
 	defer result.Body.Close()
 
-	responseIDs := result.Header.Values("X-Gateway-Request-ID")
+	responseIDs := result.Header.Values(protocol.HeaderGatewayRequestID)
 	if len(responseIDs) != 1 {
 		t.Fatalf("expected exactly one Gateway request ID, got %q", responseIDs)
 	}
@@ -43,14 +54,67 @@ func TestGetGatewayRequestID(t *testing.T) {
 	if responseRequestID == "" {
 		t.Fatal("expected a non-empty Gateway request ID")
 	}
-	if responseRequestID == clientSuppliedID {
+	if responseRequestID == forgedGatewayID {
 		t.Fatal("client-supplied request ID must not control the Gateway request ID")
+	}
+	if contextClientRequestID != clientRequestID {
+		t.Fatalf("expected client request ID %q in context, got %q", clientRequestID, contextClientRequestID)
 	}
 	if contextRequestID != responseRequestID {
 		t.Fatalf("expected context request ID %q to match response request ID %q", contextRequestID, responseRequestID)
 	}
 	if forwardedRequestID != responseRequestID {
 		t.Fatalf("expected forwarded request ID %q to match response request ID %q", forwardedRequestID, responseRequestID)
+	}
+}
+
+func TestLogRequestRecordsCorrelationFields(t *testing.T) {
+	logPath := t.TempDir() + "/gateway.log"
+	if err := log.Init("info", logPath); err != nil {
+		t.Fatalf("initialize logger: %v", err)
+	}
+
+	handler := GetGatewayRequestID(LogRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set(protocol.HeaderClientRequestID, "client-123")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+	if err := log.Sync(); err != nil {
+		t.Fatalf("sync logger: %v", err)
+	}
+
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(content, &entry); err != nil {
+		t.Fatalf("decode log: %v", err)
+	}
+	if got := entry["msg"]; got != "gateway request completed" {
+		t.Fatalf("expected completion log, got %#v", got)
+	}
+	if got := entry["client_request_id"]; got != "client-123" {
+		t.Fatalf("expected client request ID %q, got %#v", "client-123", got)
+	}
+	gatewayRequestID, ok := entry["gateway_request_id"].(string)
+	if !ok || gatewayRequestID == "" {
+		t.Fatalf("expected non-empty Gateway request ID, got %#v", entry["gateway_request_id"])
+	}
+	if got := entry["method"]; got != http.MethodPost {
+		t.Fatalf("expected method %q, got %#v", http.MethodPost, got)
+	}
+	if got := entry["path"]; got != "/v1/chat/completions" {
+		t.Fatalf("expected path %q, got %#v", "/v1/chat/completions", got)
+	}
+	if got := entry["status"]; got != float64(http.StatusAccepted) {
+		t.Fatalf("expected status %d, got %#v", http.StatusAccepted, got)
+	}
+	if _, ok := entry["latency"]; !ok {
+		t.Fatal("expected latency field")
 	}
 }
 

@@ -106,7 +106,7 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 	}
 	defer resp.Body.Close()
 
-	gatewayReqID := resp.Header.Get("X-Gateway-Request-ID")
+	gatewayReqID := resp.Header.Get(protocol.HeaderGatewayRequestID)
 	if len(gatewayReqID) != 0 {
 		_, err := fmt.Fprintf(out, "X-Gateway-Request-ID:%s\n", gatewayReqID)
 		if err != nil {

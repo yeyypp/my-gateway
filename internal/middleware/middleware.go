@@ -19,9 +19,45 @@ import (
 type contextKey string
 
 const (
-	ChatReqKey   = contextKey("chatReqKey")
-	RequestIDKey = contextKey("requestIDKey")
+	ChatReqKey         = contextKey("chatReqKey")
+	RequestIDKey       = contextKey("requestIDKey")
+	ClientRequestIDKey = contextKey("clientRequestIDKey")
 )
+
+type responseStatusWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (w *responseStatusWriter) WriteHeader(statusCode int) {
+	if w.statusCode != 0 {
+		return
+	}
+	w.statusCode = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *responseStatusWriter) Write(content []byte) (int, error) {
+	if w.statusCode == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(content)
+}
+
+func (w *responseStatusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func GetReqIDFromCTX(ctx context.Context) []zap.Field {
+	fields := make([]zap.Field, 0, 2)
+	if requestID, ok := ctx.Value(RequestIDKey).(string); ok && requestID != "" {
+		fields = append(fields, zap.String("gateway_request_id", requestID))
+	}
+	if clientRequestID, ok := ctx.Value(ClientRequestIDKey).(string); ok && clientRequestID != "" {
+		fields = append(fields, zap.String("client_request_id", clientRequestID))
+	}
+	return fields
+}
 
 func ValidateJSONRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,11 +67,6 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 			return
 		}
 
-		requestID, ok := r.Context().Value(RequestIDKey).(string)
-		if !ok {
-			log.Error("get requestID from req context failed")
-		}
-
 		// Limit the request body size to prevent abuse
 		limitedBody := http.MaxBytesReader(w, r.Body, 1024*1024) // Limit request body to 1MB
 		defer limitedBody.Close()
@@ -43,14 +74,15 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		content, err := io.ReadAll(limitedBody)
 		if err != nil {
 			if _, ok := err.(*http.MaxBytesError); ok {
-				log.Error("request body is larger than 1 MiB", zap.String("request-id", requestID))
+				log.Error("request body is larger than 1 MiB", GetReqIDFromCTX(r.Context())...)
 				handlers.SendError(w, protocol.APIError{
 					Message: "request body too large",
 					Type:    protocol.ErrorTypeInvalidRequest,
 					Code:    protocol.ErrorCodeRequestTooLarge,
 				}, http.StatusRequestEntityTooLarge)
 			} else {
-				log.Error("read request body failed", zap.Error(err), zap.String("request-id", requestID))
+				fields := append(GetReqIDFromCTX(r.Context()), zap.Error(err))
+				log.Error("read request body failed", fields...)
 				handlers.SendError(w, protocol.APIError{
 					Message: "read request body failed",
 					Type:    protocol.ErrorTypeInvalidRequest,
@@ -67,7 +99,8 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		var chatReq protocol.ChatCompletionRequest
 		err = json.Unmarshal(content, &chatReq)
 		if err != nil {
-			log.Error("unmarshal chat request failed", zap.Error(err), zap.String("request-id", requestID))
+			fields := append(GetReqIDFromCTX(r.Context()), zap.Error(err))
+			log.Error("unmarshal chat request failed", fields...)
 			handlers.SendError(w, protocol.APIError{
 				Message: "invalid json",
 				Type:    protocol.ErrorTypeInvalidRequest,
@@ -77,7 +110,7 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		}
 
 		if len(chatReq.Messages) == 0 {
-			log.Error("chat request messages are empty", zap.String("request-id", requestID))
+			log.Error("chat request messages are empty", GetReqIDFromCTX(r.Context())...)
 			handlers.SendError(w, protocol.APIError{
 				Message: "messages must not be empty",
 				Type:    protocol.ErrorTypeInvalidRequest,
@@ -88,7 +121,8 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		}
 
 		if chatReq.Stream {
-			log.Error("streaming is not supported", zap.Bool("stream", chatReq.Stream), zap.String("request-id", requestID))
+			fields := append(GetReqIDFromCTX(r.Context()), zap.Bool("stream", chatReq.Stream))
+			log.Error("streaming is not supported", fields...)
 			handlers.SendError(w, protocol.APIError{
 				Message: "streaming is not supported",
 				Type:    protocol.ErrorTypeInvalidRequest,
@@ -117,10 +151,34 @@ func RequestTimeout(timeout time.Duration) func(http.Handler) http.Handler {
 func GetGatewayRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := uuid.New().String()
-		r.Header.Set("X-Gateway-Request-ID", requestID)
-		w.Header().Set("X-Gateway-Request-ID", requestID)
+		r.Header.Set(protocol.HeaderGatewayRequestID, requestID)
+		w.Header().Set(protocol.HeaderGatewayRequestID, requestID)
 		ctx := context.WithValue(r.Context(), RequestIDKey, requestID)
+		if clientRequestID := r.Header.Get(protocol.HeaderClientRequestID); clientRequestID != "" {
+			ctx = context.WithValue(ctx, ClientRequestIDKey, clientRequestID)
+		}
 
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func LogRequest(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		statusWriter := &responseStatusWriter{ResponseWriter: w}
+
+		next.ServeHTTP(statusWriter, r)
+
+		statusCode := statusWriter.statusCode
+		if statusCode == 0 {
+			statusCode = http.StatusOK
+		}
+		fields := append(GetReqIDFromCTX(r.Context()),
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.Int("status", statusCode),
+			zap.Duration("latency", time.Since(start)),
+		)
+		log.Info("gateway request completed", fields...)
 	})
 }
