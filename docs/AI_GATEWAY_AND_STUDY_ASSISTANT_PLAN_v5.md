@@ -115,9 +115,9 @@
 ## 1.1 当前状态卡
 
 - 当前阶段：阶段 A，最小 AI Gateway
-- 当前主题：W2 模型协议、多上游与路由
-- 当前里程碑：W2-M3 可追踪、可运行与阶段收口
-- 状态：进行中；W2-M2 已完成，W2-M3 已完成非流式错误与日志基线、请求追踪闭环和健康检查，待补齐运行文档与阶段演示
+- 当前主题：W3 SSE 与真实模型流式体验
+- 当前里程碑：W3-M1 流式端到端薄片
+- 状态：待开始；W2-M3 已完成，W2 模型协议、多上游、路由、请求追踪、健康检查、运行文档与阶段演示已收口
 - 最近代码进度更新时间：2026-09-01
 - 当前分支：master
 
@@ -143,16 +143,17 @@
 - Gateway 为每次 Chat Completions 请求生成独立的 `X-Gateway-Request-ID`，写入 Context、转发请求和客户端响应；客户端伪造的同名 Header 不会被采用，上游响应的同名 Header 会在复制给客户端前删除，Provider 自有 Request ID 保持独立；Study Assistant 可展示 Gateway Request ID，相关成功、校验失败、代理失败和 Header 所有权行为已有自动化测试；
 - Gateway 接受可选的 `X-Client-Request-ID` 并与 Gateway Request ID 分开保存在 Context 和结构化日志中，该客户端字段不会继续转发给 Upstream；请求完成日志记录 method、path、status 和 latency，Gateway 收到上游响应时单独记录 model、upstream 和 `upstream_request_id`；Mock 生成自己的 `X-Request-ID`，并在完成日志中记录同一个 Gateway Request ID，实现客户端、Gateway 与 Mock 的日志关联；
 - Gateway 提供不依赖 Upstream 的 `/healthz` 和按配置主动探测的 `/readyz`，Mock 提供 `/readyz`；`health_url` 为可选且在配置加载时校验，未配置的 Upstream 不参与 readiness，至少一个被探测 Upstream 可用时返回 200，全部不可用时返回 503，故障恢复和请求取消已有自动化测试；2026-09-01 执行相关测试、全量测试、Race、Vet 和 Build，全部通过。
+- 运行文档已覆盖启动、最小非流式协议、配置化路由、三类 Request ID、跨组件日志关联以及健康检查的故障与恢复语义；用户确认已完成端到端手动演示，2026-09-01 再次执行全量测试、Race、Vet、Build 和 `git diff --check`，全部通过。
 
 当前待完成的工作单元：
 
-1. 完成 W2-M3 的运行文档和阶段演示：让新环境可以按文档启动 Study Assistant、Gateway 与 Mock，说明最小协议、路由、三类 Request ID 和健康检查行为，并实际验证一次请求的跨组件日志关联以及 Mock 停止、恢复时的 readiness 变化。
+1. 按教学模式开始 W3-M1：在现有 `/v1/chat/completions` 上形成 Mock、Gateway 与 Study Assistant 的最小 SSE 端到端薄片。
 
 下一次可见成果：
 
-> 仅按运行文档即可复现 Study Assistant 请求、Gateway 与 Mock 日志关联以及 readiness 的故障和恢复变化，并留下 W2-M3 的最终验收证据。
+> `curl -N` 和 Study Assistant 都能通过 Gateway 逐块显示 Mock 的流式响应，并以标准结束标记完成一次请求。
 
-当前没有外部阻塞；W2-M3 的请求追踪和健康检查已完成，运行文档和阶段演示尚待完成。
+当前没有外部阻塞；W2 已完成，W3-M1 尚未开始。
 
 ## 1.2 已完成摘要
 
@@ -160,9 +161,10 @@
 - [x] W1-M2：Context、超时、取消和资源释放；
 - [x] W1-M3：测试、重构、Race、Vet、Build 和基线复盘；
 - [x] W2-M1：双 Mock、静态逻辑模型路由、Study Assistant CLI 和最小端到端闭环；
-- [x] W2-M2：配置化、逻辑模型到真实模型的映射、请求改写和本地 Ollama 真实链路验证。
+- [x] W2-M2：配置化、逻辑模型到真实模型的映射、请求改写和本地 Ollama 真实链路验证；
+- [x] W2-M3：非流式错误与日志、请求关联、健康检查、运行文档和阶段演示。
 
-W1 的逐次历史与 v2/v3 变更过程保留在 v3，不在本文件重复；W2-M1 和 W2-M2 的完成证据记录在对应里程碑复盘中。
+W1 的逐次历史与 v2/v3 变更过程保留在 v3，不在本文件重复；W2-M1、W2-M2 和 W2-M3 的完成证据记录在对应里程碑复盘中。
 
 ---
 
@@ -440,7 +442,7 @@ study-assistant analyze issue.md --model model-a
 - 对 Study Assistant 的影响：它已能在客户端协议不变的情况下验证 Mock 和真实模型路由，后续只随 Gateway 验证需求或真实重复使用场景演进；
 - 下一步：进入 W2-M3，补齐请求追踪、健康检查、运行文档和阶段演示。
 
-### [ ] W2-M3：可追踪、可运行与阶段收口
+### [x] W2-M3：可追踪、可运行与阶段收口
 
 包含：
 
@@ -466,6 +468,16 @@ study-assistant analyze issue.md --model model-a
 - 单次业务失败不会让健康检查永久失败；
 - 相关测试和全量测试通过；
 - 至少完成一次端到端演示并记录可观察结果。
+
+#### W2-M3 复盘
+
+- 可演示成果：仅按运行文档即可启动 Study Assistant、Gateway 与 Mock，关联一次请求在 CLI、Gateway 和 Mock 中的日志，并观察 readiness 在 Upstream 故障和恢复时的变化；
+- 用户问题：调用失败时需要区分客户端、Gateway 与 Upstream 的责任，并能用稳定 ID 从客户端结果追踪到代理和 Provider 日志；
+- 关键设计与数据流：客户端 ID、Gateway ID 和 Provider ID 各自拥有独立所有权；Gateway ID 贯穿客户端响应、Gateway Context 和 Upstream 请求，Provider ID 保持独立；liveness 只反映进程存活，readiness 每次主动探测配置了健康地址的 Upstream，并采用至少一个可用即就绪的策略；
+- 验证证据：请求 ID 所有权、传播、日志字段、校验失败、代理失败、健康探测、故障恢复和取消均有自动化测试；用户确认已完成端到端手动演示；2026-09-01 执行全量测试、Race、Vet、Build 和 `git diff --check` 全部通过；
+- 当前简化与边界：只支持非流式最小 Chat Completions 协议；readiness 是被探测 Upstream 的整体可用信号，不保证每个逻辑模型均可调用；未配置健康地址的 Upstream 不参与探测；
+- 对 Study Assistant 的影响：它继续只通过 Gateway 和逻辑模型调用，并能显示 Gateway Request ID 和有界、可诊断的失败信息，作为端到端验证入口；
+- 下一步：进入 W3-M1，完成 Mock、Gateway 和 Study Assistant 的最小 SSE 流式薄片。
 
 ## 5.2 W3：SSE 与真实模型流式体验
 
@@ -862,12 +874,14 @@ pprof 不要求为了计划强行制造问题。若 Benchmark 或故障实验发
 
 | 日期 | 阶段 | 结果 | 证据 | 遗留项 |
 |---|---|---|---|---|
+| 2026-09-01 | W2 完成 | 配置化多上游路由、真实模型改写、非流式错误语义、请求关联、健康检查和可复现运行文档完成 | 自动化测试、Test、Race、Vet、Build、用户确认的手动演示和运行文档 | 进入 W3 |
 | 2026-08-12 | W1 完成 | HTTP 生命周期、超时取消、测试与基线复盘完成 | Test、Race、Vet、Build、手动请求和文档 | 进入 W2 |
 
 ## 10.4 计划变更记录
 
 | 日期 | 版本 | 调整 | 原因 |
 |---|---|---|---|
+| 2026-09-01 | v5 | 补齐最小协议、路由、三类 Request ID、健康检查及故障恢复运行文档；根据用户已完成的手动演示和重新通过的完整验证收口 W2-M3，当前里程碑进入 W3-M1 | W2-M3 的代码、测试、文档和端到端演示验收条件均已满足 |
 | 2026-09-01 | v5 | 记录 Gateway Request ID 的生成、传播、响应回传与 Header 所有权保护、可选客户端 ID、Gateway 与 Mock 日志关联以及健康检查已经完成；下一工作单元转为运行文档和阶段演示 | 让状态卡与代码和自动化测试证据一致，同时不在可复现文档和手动演示完成前提前勾选 W2-M3 |
 | 2026-08-28 | v5 | 完成 Gateway 与 Mock 的 Zap 结构化日志、非流式错误责任边界、单点超时归类和 Study Assistant 错误展示，下一工作单元进入 Request ID 关联 | 用真实调用暴露的问题建立可读、可测试的诊断基线，再增加跨组件关联能力 |
 | 2026-08-27 | v5 | 将 Study Assistant 明确为 Gateway 的参考客户端和验证载体；W2-M2 改为真实上游端到端验证并根据 Ollama 证据收口；W2-M3 先处理错误责任边界、Zap 结构化日志和客户端错误信息，再接入 Request ID | 避免制造虚假产品需求，并优先解决真实 Ollama 调用暴露出的超时诊断困难 |
