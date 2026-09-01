@@ -66,6 +66,11 @@ func validateConfig(config Config) error {
 		if err := validateBaseURL(upstream.BaseURL); err != nil {
 			return fmt.Errorf("upstream %q: %w", upstream.Name, err)
 		}
+		if upstream.HealthURL != "" {
+			if err := validateHealthURL(upstream.HealthURL); err != nil {
+				return fmt.Errorf("upstream %q: %w", upstream.Name, err)
+			}
+		}
 
 		exists[upstream.Name] = struct{}{}
 	}
@@ -97,20 +102,28 @@ func validateConfig(config Config) error {
 }
 
 func validateBaseURL(rawURL string) error {
+	return validateHTTPURL(rawURL, "upstream base URL")
+}
+
+func validateHealthURL(rawURL string) error {
+	return validateHTTPURL(rawURL, "health URL")
+}
+
+func validateHTTPURL(rawURL, fieldName string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("parse upstream base URL %q: %w", rawURL, err)
+		return fmt.Errorf("parse %s %q: %w", fieldName, rawURL, err)
 	}
 
 	if len(u.Scheme) == 0 {
-		return fmt.Errorf("upstream base URL %q is missing scheme", rawURL)
+		return fmt.Errorf("%s %q is missing scheme", fieldName, rawURL)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("upstream base URL %q uses unsupported scheme %q", rawURL, u.Scheme)
+		return fmt.Errorf("%s %q uses unsupported scheme %q", fieldName, rawURL, u.Scheme)
 	}
 
 	if len(u.Host) == 0 {
-		return fmt.Errorf("upstream base URL %q is missing host", rawURL)
+		return fmt.Errorf("%s %q is missing host", fieldName, rawURL)
 	}
 	return nil
 }

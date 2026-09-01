@@ -105,3 +105,17 @@ func TestNormalRequest(t *testing.T) {
 		t.Fatalf("expected finish reason %q, got %q", "stop", choice.FinishReason)
 	}
 }
+
+func TestMockHealthCheck(t *testing.T) {
+	handler := NewMockAPIHandler("mock-a", "model-a")
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+
+	handler.CheckHealth(recorder, req)
+
+	result := recorder.Result()
+	defer result.Body.Close()
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("expected status code %d, got %d", http.StatusOK, result.StatusCode)
+	}
+}

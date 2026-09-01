@@ -1,8 +1,10 @@
 upstreams:
   - name: mock-a
     base_url: http://localhost:8091
+    health_url: http://localhost:8091/readyz
   - name: mock-b
     base_url: http://localhost:8092
+    health_url: http://localhost:8092/readyz
   - name: ollama
     base_url: http://host.orb.internal:11434
 

@@ -94,3 +94,16 @@ func TestConfigToRouter(t *testing.T) {
 		})
 	}
 }
+
+func TestHealthCheck(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+
+	HealthCheck(recorder, req)
+
+	result := recorder.Result()
+	defer result.Body.Close()
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("expected status code %d, got %d", http.StatusOK, result.StatusCode)
+	}
+}

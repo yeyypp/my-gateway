@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"shuai/gateway/internal/config"
-	"shuai/gateway/internal/log"
 	"sync"
 	"time"
+
+	"shuai/gateway/internal/config"
+	"shuai/gateway/internal/log"
 
 	"go.uber.org/zap"
 )
@@ -18,8 +19,12 @@ type ReadyCheck struct {
 }
 
 func NewReadyCheck(upstreams []config.Upstream) *ReadyCheck {
-	u := make([]config.Upstream, len(upstreams))
-	copy(u, upstreams)
+	probedUpstreams := make([]config.Upstream, 0, len(upstreams))
+	for _, upstream := range upstreams {
+		if upstream.HealthURL != "" {
+			probedUpstreams = append(probedUpstreams, upstream)
+		}
+	}
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
@@ -29,13 +34,18 @@ func NewReadyCheck(upstreams []config.Upstream) *ReadyCheck {
 		},
 	}
 	return &ReadyCheck{
-		upstreams: u,
+		upstreams: probedUpstreams,
 		client:    client,
 	}
 }
 
 func (rc *ReadyCheck) CheckUpstreams(w http.ResponseWriter, r *http.Request) {
 	numOfUpstreams := len(rc.upstreams)
+	if numOfUpstreams == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(numOfUpstreams)
 	resCh := make(chan error, numOfUpstreams)
@@ -71,7 +81,7 @@ func (rc *ReadyCheck) checkIfUpstreamReady(ctx context.Context, upstream config.
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", upstream.HealthURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream.HealthURL, nil)
 	if err != nil {
 		return err
 	}
@@ -83,7 +93,7 @@ func (rc *ReadyCheck) checkIfUpstreamReady(ctx context.Context, upstream config.
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("upstream:%s,url:%s, unavailable", upstream.Name, upstream.BaseURL)
+		return fmt.Errorf("upstream %q returned health status %d", upstream.Name, resp.StatusCode)
 	}
 	return nil
 }

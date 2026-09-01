@@ -67,6 +67,18 @@ func TestValidateConfig(t *testing.T) {
 			},
 		},
 		{
+			name:    "invalid upstream health URL",
+			wantErr: `upstream "mock-a": health URL "localhost:8091/readyz" uses unsupported scheme "localhost"`,
+			config: Config{
+				Upstreams: []Upstream{{
+					Name:      validUpstream.Name,
+					BaseURL:   validUpstream.BaseURL,
+					HealthURL: "localhost:8091/readyz",
+				}},
+				Models: []Model{validModel},
+			},
+		},
+		{
 			name:    "empty models",
 			wantErr: "at least one model is required",
 			config: Config{
@@ -121,6 +133,17 @@ func TestValidateConfig(t *testing.T) {
 			config: Config{
 				Upstreams: []Upstream{validUpstream},
 				Models:    []Model{validModel},
+			},
+		},
+		{
+			name: "valid config with optional health URL",
+			config: Config{
+				Upstreams: []Upstream{{
+					Name:      validUpstream.Name,
+					BaseURL:   validUpstream.BaseURL,
+					HealthURL: "http://localhost:8091/readyz",
+				}},
+				Models: []Model{validModel},
 			},
 		},
 	}
@@ -201,6 +224,48 @@ func TestValidateBaseURL(t *testing.T) {
 	}
 }
 
+func TestValidateHealthURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		rawURL  string
+		wantErr string
+	}{
+		{
+			name:   "HTTP URL with path",
+			rawURL: "http://localhost:8091/readyz",
+		},
+		{
+			name:    "relative URL",
+			rawURL:  "/readyz",
+			wantErr: `health URL "/readyz" is missing scheme`,
+		},
+		{
+			name:    "unsupported scheme",
+			rawURL:  "ftp://example.com/readyz",
+			wantErr: `health URL "ftp://example.com/readyz" uses unsupported scheme "ftp"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateHealthURL(tc.rawURL)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("expected error %q, got nil", tc.wantErr)
+			}
+			if err.Error() != tc.wantErr {
+				t.Fatalf("expected error %q, got %q", tc.wantErr, err.Error())
+			}
+		})
+	}
+}
+
 func TestLoad(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -213,14 +278,19 @@ func TestLoad(t *testing.T) {
 			content: `upstreams:
   - name: mock-a
     base_url: http://localhost:8091
+    health_url: http://localhost:8091/readyz
 models:
   - logic_model: model-a
     upstream: mock-a
     real_model: real-model-a
 `,
 			wantConfig: Config{
-				Upstreams: []Upstream{{Name: "mock-a", BaseURL: "http://localhost:8091"}},
-				Models:    []Model{{LogicModel: "model-a", Upstream: "mock-a", RealModel: "real-model-a"}},
+				Upstreams: []Upstream{{
+					Name:      "mock-a",
+					BaseURL:   "http://localhost:8091",
+					HealthURL: "http://localhost:8091/readyz",
+				}},
+				Models: []Model{{LogicModel: "model-a", Upstream: "mock-a", RealModel: "real-model-a"}},
 			},
 		},
 		{
