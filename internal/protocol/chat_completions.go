@@ -28,6 +28,25 @@ type Choice struct {
 	FinishReason string  `json:"finish_reason"`
 }
 
+type ChatCompletionStreamResponse struct {
+	ID      string        `json:"id"`
+	Object  string        `json:"object"`
+	Created int64         `json:"created"`
+	Model   string        `json:"model"`
+	Choices []ChoiceChunk `json:"choices"`
+	Usage   Usage         `json:"usage"`
+}
+
+type ChoiceChunk struct {
+	Index        int     `json:"index"`
+	Delta        Delta   `json:"delta"`
+	FinishReason *string `json:"finish_reason"`
+}
+
+type Delta struct {
+	Content string `json:"content"`
+}
+
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`

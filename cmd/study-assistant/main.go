@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -42,16 +43,21 @@ func main() {
 			if err != nil {
 				return err
 			}
+			isStream, err := cmd.Flags().GetBool("stream")
+			if err != nil {
+				return err
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			return runAnalyze(ctx, http.DefaultClient, gatewayURL, filePath, model, cmd.OutOrStdout())
+			return runAnalyze(ctx, http.DefaultClient, gatewayURL, filePath, model, cmd.OutOrStdout(), isStream)
 		},
 	}
 
 	flags := analyzeCmd.Flags()
 	flags.String("model", "model-a", "which model to use")
+	flags.Bool("stream", false, "resp is stream or not")
 	flags.String("gateway-url", "http://127.0.0.1:8080", "gateway url")
 
 	rootCmd.AddCommand(analyzeCmd)
@@ -72,7 +78,7 @@ func readInputFile(path string) ([]byte, error) {
 	return content, nil
 }
 
-func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, model string, out io.Writer) error {
+func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, model string, out io.Writer, isStream bool) error {
 	content, err := readInputFile(filePath)
 	if err != nil {
 		return err
@@ -86,7 +92,7 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 				Content: string(content),
 			},
 		},
-		Stream: false,
+		Stream: isStream,
 	}
 
 	reqJson, err := json.Marshal(chatReq)
@@ -138,20 +144,79 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 		}
 		return fmt.Errorf("gateway request failed: http_status=%s, response=%q", resp.Status, responseText)
 	} else {
-		var chatResp protocol.ChatCompletionResponse
-		if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-			return err
+		if !isStream {
+			var chatResp protocol.ChatCompletionResponse
+			if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+				return err
+			}
+			if len(chatResp.Choices) == 0 {
+				return errors.New("")
+			}
+			if _, err := out.Write([]byte(chatResp.Choices[0].Message.Content)); err != nil {
+				return err
+			}
+		} else {
+			if err := writeStream(resp.Body, out); err != nil {
+				return err
+			}
 		}
-		if len(chatResp.Choices) == 0 {
-			return errors.New("")
-		}
-		if _, err := out.Write([]byte(chatResp.Choices[0].Message.Content)); err != nil {
-			return err
-		}
+
 	}
 	return nil
 }
 
 func hasAPIError(apiErr protocol.APIError) bool {
 	return apiErr.Message != "" || apiErr.Type != "" || apiErr.Code != "" || apiErr.Param != ""
+}
+
+func writeStream(body io.Reader, out io.Writer) error {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	done := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		// 忽略 SSE 注释或当前不关心的字段。
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+
+		field, value, ok := strings.Cut(line, ":")
+		if !ok || field != "data" {
+			continue
+		}
+
+		data := strings.TrimSpace(value)
+		if data == "[DONE]" {
+			done = true
+			break
+		}
+
+		var chunk protocol.ChatCompletionStreamResponse
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return fmt.Errorf("decode stream chunk: %w", err)
+		}
+
+		for _, choice := range chunk.Choices {
+			content := choice.Delta.Content
+			if content == "" {
+				continue
+			}
+
+			if _, err := io.WriteString(out, content); err != nil {
+				return fmt.Errorf("write stream content: %w", err)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read stream response: %w", err)
+	}
+	if !done {
+		return errors.New("stream ended before [DONE]")
+	}
+	return nil
 }
