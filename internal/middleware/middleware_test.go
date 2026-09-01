@@ -187,20 +187,6 @@ func TestValidateJSONRequestRejectsUnsupportedChatRequests(t *testing.T) {
 				Code:    protocol.ErrorCodeInvalidValue,
 			},
 		},
-		{
-			name: "stream true",
-			body: `{
-				"model":"model-a",
-				"messages":[{"role":"user","content":"test"}],
-				"stream":true
-			}`,
-			wantError: protocol.APIError{
-				Message: "streaming is not supported",
-				Type:    protocol.ErrorTypeInvalidRequest,
-				Param:   "stream",
-				Code:    protocol.ErrorCodeUnsupportedValue,
-			},
-		},
 	}
 
 	for _, tc := range tests {

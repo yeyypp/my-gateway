@@ -48,13 +48,6 @@ func (w *responseStatusWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
-func (w *responseStatusWriter) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-		return
-	}
-}
-
 func GetReqIDFromCTX(ctx context.Context) []zap.Field {
 	fields := make([]zap.Field, 0, 2)
 	if requestID, ok := ctx.Value(RequestIDKey).(string); ok && requestID != "" {
