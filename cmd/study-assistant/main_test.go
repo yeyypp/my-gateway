@@ -9,8 +9,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"shuai/gateway/internal/protocol"
 	"testing"
+
+	"shuai/gateway/internal/protocol"
 )
 
 func TestRunAnalyzeSendsRequestAndPrintsResponse(t *testing.T) {
@@ -85,7 +86,7 @@ func TestRunAnalyzeSendsRequestAndPrintsResponse(t *testing.T) {
 	}))
 	defer gateway.Close()
 
-	if err := runAnalyze(context.Background(), gateway.Client(), gateway.URL, filePath, model, &output); err != nil {
+	if err := runAnalyze(context.Background(), gateway.Client(), gateway.URL, filePath, model, &output, false); err != nil {
 		t.Fatal(err.Error())
 	}
 	if got := output.String(); got != "X-Gateway-Request-ID:gateway-success-123\nresponse from mock-a" {
@@ -126,6 +127,7 @@ func TestRunAnalyzeReturnsErrorForNon2xxResponse(t *testing.T) {
 		filePath,
 		"model-unknown",
 		&output,
+		false,
 	)
 	if err == nil {
 		t.Fatal("expected a non-nil error")
@@ -163,6 +165,7 @@ func TestRunAnalyzeReturnsReadableErrorForNonEnvelopeResponse(t *testing.T) {
 		filePath,
 		"model-a",
 		&output,
+		false,
 	)
 	if err == nil {
 		t.Fatal("expected a non-nil error")
@@ -212,7 +215,7 @@ func TestRunAnalyzeReturnsGatewayRequestIDOutputError(t *testing.T) {
 
 	writeErr := errors.New("write request ID output")
 	out := &failFirstWriter{err: writeErr}
-	err := runAnalyze(context.Background(), gateway.Client(), gateway.URL, filePath, "model-a", out)
+	err := runAnalyze(context.Background(), gateway.Client(), gateway.URL, filePath, "model-a", out, false)
 	if err == nil {
 		t.Fatal("expected a non-nil Gateway request ID output error")
 	}

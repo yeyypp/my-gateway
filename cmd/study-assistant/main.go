@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -48,8 +49,12 @@ func main() {
 				return err
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
+			ctx := cmd.Context()
+			if !isStream {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+				defer cancel()
+			}
 
 			return runAnalyze(ctx, http.DefaultClient, gatewayURL, filePath, model, cmd.OutOrStdout(), isStream)
 		},
@@ -106,6 +111,7 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	requestStarted := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -156,7 +162,18 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 				return err
 			}
 		} else {
-			if err := writeStream(resp.Body, out); err != nil {
+			contentType := resp.Header.Get("Content-Type")
+			mediaType, _, err := mime.ParseMediaType(contentType)
+			if err != nil {
+				return fmt.Errorf("parse gateway stream content type %q: %w", contentType, err)
+			}
+			if mediaType != "text/event-stream" {
+				return fmt.Errorf("gateway stream response has content type %q, want %q", mediaType, "text/event-stream")
+			}
+			if _, err := fmt.Fprintf(out, "Model:%s\n", model); err != nil {
+				return fmt.Errorf("write stream model: %w", err)
+			}
+			if err := parseStream(resp.Body, out, requestStarted); err != nil {
 				return err
 			}
 		}
@@ -169,54 +186,89 @@ func hasAPIError(apiErr protocol.APIError) bool {
 	return apiErr.Message != "" || apiErr.Type != "" || apiErr.Code != "" || apiErr.Param != ""
 }
 
-func writeStream(body io.Reader, out io.Writer) error {
+func parseStream(body io.Reader, out io.Writer, ttftTime time.Time) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
 	done := false
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-		// 忽略 SSE 注释或当前不关心的字段。
-		if strings.HasPrefix(line, ":") {
-			continue
+	isTTFT := true
+	curDataLine := make([]string, 0)
+
+	processDataLine := func() error {
+		if len(curDataLine) == 0 {
+			return nil
 		}
 
-		field, value, ok := strings.Cut(line, ":")
-		if !ok || field != "data" {
-			continue
-		}
+		// SSE 标准规定，同一个事件里的多个 data: 应当用换行连接。
+		data := strings.Join(curDataLine, "\n")
+		curDataLine = curDataLine[:0]
 
-		data := strings.TrimSpace(value)
+		data = strings.TrimSpace(data)
+		if len(data) == 0 {
+			return nil
+		}
 		if data == "[DONE]" {
 			done = true
-			break
+			return nil
 		}
 
-		var chunk protocol.ChatCompletionStreamResponse
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		var chatResp protocol.ChatCompletionStreamResponse
+		if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
 			return fmt.Errorf("decode stream chunk: %w", err)
 		}
 
-		for _, choice := range chunk.Choices {
-			content := choice.Delta.Content
-			if content == "" {
+		for _, choice := range chatResp.Choices {
+			if len(choice.Delta.Content) == 0 {
 				continue
 			}
-
-			if _, err := io.WriteString(out, content); err != nil {
+			if isTTFT {
+				_, err := fmt.Fprintf(out, "TTFT:%dms\n", time.Since(ttftTime).Milliseconds())
+				if err != nil {
+					return fmt.Errorf("write stream TTFT: %w", err)
+				}
+				isTTFT = false
+			}
+			if _, err := io.WriteString(out, choice.Delta.Content); err != nil {
 				return fmt.Errorf("write stream content: %w", err)
 			}
 		}
+		return nil
+	}
+
+	for scanner.Scan() {
+		// 标准 SSE 解析只移除冒号后最多一个空格，不要对正行使用TrimSpace
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if line == "" {
+			if err := processDataLine(); err != nil {
+				return err
+			}
+			if done {
+				break
+			}
+			continue
+		}
+
+		before, after, found := strings.Cut(line, ":")
+		if !found || strings.TrimSpace(before) != "data" {
+			continue
+		}
+
+		// DONE也是一个完整SSE事件，应该在process中处理
+		// if strings.TrimSpace(after) == "[DONE]" {
+		// 	done = true
+		// 	break
+		// }
+
+		curDataLine = append(curDataLine, strings.TrimSpace(after))
 	}
 
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read stream response: %w", err)
 	}
+
 	if !done {
 		return errors.New("stream ended before [DONE]")
 	}
+
 	return nil
 }

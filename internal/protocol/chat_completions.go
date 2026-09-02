@@ -44,6 +44,7 @@ type ChoiceChunk struct {
 }
 
 type Delta struct {
+	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
