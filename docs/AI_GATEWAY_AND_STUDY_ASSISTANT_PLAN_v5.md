@@ -117,8 +117,8 @@
 - 当前阶段：阶段 A，最小 AI Gateway
 - 当前主题：W3 SSE 与真实模型流式体验
 - 当前里程碑：W3-M1 流式端到端薄片
-- 状态：待开始；W2-M3 已完成，W2 模型协议、多上游、路由、请求追踪、健康检查、运行文档与阶段演示已收口
-- 最近代码进度更新时间：2026-09-01
+- 状态：进行中；真实 Ollama 流式链路已跑通，待补 Gateway 级确定性验证和流式文档收口
+- 最近代码进度更新时间：2026-09-02
 - 当前分支：master
 
 已经验证：
@@ -128,7 +128,7 @@
 - Mock A/B 可通过 `make dev` 启动；
 - 静态 `ModelRouter` 的 model-a、model-b、缺失和未知模型测试；
 - Study Assistant CLI 只通过 Gateway 地址和逻辑模型完成 model-a / model-b 路由；
-- 空 `messages` 和 `stream: true` 在 Gateway 边界返回稳定的 400 错误；
+- 空 `messages` 在 Gateway 边界返回稳定的 400 错误；W3 已移除对 `stream: true` 的拒绝并允许请求进入现有路由和代理链路；
 - 400、502、504 统一错误 envelope；
 - Study Assistant → Gateway → Mock A/B 已完成手动演示；
 - Gateway 可从 YAML 加载 Upstream、Base URL、逻辑模型、真实模型名和引用关系，并在监听前拒绝缺失字段、重复名称、非法 URL 与未知 Upstream；
@@ -144,16 +144,18 @@
 - Gateway 接受可选的 `X-Client-Request-ID` 并与 Gateway Request ID 分开保存在 Context 和结构化日志中，该客户端字段不会继续转发给 Upstream；请求完成日志记录 method、path、status 和 latency，Gateway 收到上游响应时单独记录 model、upstream 和 `upstream_request_id`；Mock 生成自己的 `X-Request-ID`，并在完成日志中记录同一个 Gateway Request ID，实现客户端、Gateway 与 Mock 的日志关联；
 - Gateway 提供不依赖 Upstream 的 `/healthz` 和按配置主动探测的 `/readyz`，Mock 提供 `/readyz`；`health_url` 为可选且在配置加载时校验，未配置的 Upstream 不参与 readiness，至少一个被探测 Upstream 可用时返回 200，全部不可用时返回 503，故障恢复和请求取消已有自动化测试；2026-09-01 执行相关测试、全量测试、Race、Vet 和 Build，全部通过。
 - 运行文档已覆盖启动、最小非流式协议、配置化路由、三类 Request ID、跨组件日志关联以及健康检查的故障与恢复语义；用户确认已完成端到端手动演示，2026-09-01 再次执行全量测试、Race、Vet、Build 和 `git diff --check`，全部通过。
+- Gateway 已接受 `stream: true`，保留逻辑模型路由和真实模型改写，并将 Ollama 的 `text/event-stream` 响应逐块返回；`curl -N` 已通过 Gateway 正常观察到多块响应和标准结束标记。
+- Study Assistant 已能解析最小 `chat.completion.chunk`、输出 `choices[].delta.content`、识别 `data: [DONE]`，并显示逻辑模型、Gateway Request ID 和用户侧 TTFT；用户已完成 `Study Assistant → Gateway → Ollama` 真实流式请求，确认答案可正常逐块显示。
 
 当前待完成的工作单元：
 
-1. 按教学模式开始 W3-M1：在现有 `/v1/chat/completions` 上形成 Mock、Gateway 与 Study Assistant 的最小 SSE 端到端薄片。
+1. 收口 W3-M1 的 Gateway 工程证据：使用测试内可控 Upstream 验证第一块在第二块产生前已经穿过完整 Middleware、Router 和 ReverseProxy 链路到达客户端；不继续扩展 Study Assistant，也不把 Mock 建设成独立流式产品。
 
 下一次可见成果：
 
-> `curl -N` 和 Study Assistant 都能通过 Gateway 逐块显示 Mock 的流式响应，并以标准结束标记完成一次请求。
+> 一个 Gateway 级确定性测试证明首块及时转发、Chunk 顺序和结束标记正确且中间件不破坏 SSE；随后更新流式运行文档并收口 W3-M1。
 
-当前没有外部阻塞；W2 已完成，W3-M1 尚未开始。
+当前没有外部阻塞；W2 已完成，W3-M1 的真实功能链路已经跑通，剩余 Gateway 自动化证据和文档尚未完成，因此暂不勾选里程碑。
 
 ## 1.2 已完成摘要
 
@@ -189,6 +191,8 @@ W1 的逐次历史与 v2/v3 变更过程保留在 v3，不在本文件重复；W
 ```
 
 AI Gateway 是项目主体；Study Assistant 优先作为参考客户端、真实链路验证入口和后续评价载体，不与成熟聊天产品竞争，也不为了满足计划而制造虚假的使用需求。只有出现真实、重复的学习场景时才扩展其产品能力，不扩展成复杂 Agent 产品。
+
+执行时优先投入 Gateway 的协议、路由、治理、可靠性和可观测能力。Study Assistant 和 Mock 不设独立产品路线：只有在验证 Gateway 行为、支持真实重复使用场景，或构造真实 Provider 难以稳定复现的故障时才修改；能由 `curl`、标准客户端或测试内 `httptest.Server` 完成的验证，不扩展辅助组件功能。
 
 ## 2.2 交付层级
 
@@ -288,6 +292,8 @@ CLI / 可选 Web Study Assistant
 - 不知道真实上游地址与 Provider 密钥。
 
 不要求自动修改仓库、完整 Agent、向量数据库或复杂 RAG。
+
+Study Assistant 达到“能发起当前 Gateway 调用、观察结果和触发必要的客户端行为”后即停止扩展；协议兼容、超时、取消、失败和指标的主要实现与证据应落在 Gateway。Mock 只提供确定性验证所需的最小上游行为，优先由局部测试服务器承担；只有手动演示或 Compose 复现需要时才增加常驻 Mock 能力。
 
 ## 3.3 架构原则
 
@@ -487,29 +493,30 @@ study-assistant analyze issue.md --model model-a
 
 包含：
 
-- Mock 返回 `text/event-stream`；
+- 使用测试内可控 Upstream 返回确定性的 `text/event-stream`；只有手动演示或 Compose 复现需要时才扩展 Mock；
 - 使用最小 `chat.completion.chunk` 和 `choices[].delta.content`；
 - 最后发送 `data: [DONE]`；
 - Gateway 到一块写一块并 Flush；
-- Study Assistant 解析 SSE 并立即打印；
+- Study Assistant 只实现验证链路所需的最小 SSE 解析和立即打印；
 - 显示模型、Request ID 和用户侧首段等待时间。
 
 验收：
 
 - `curl -N` 和 Study Assistant 都能逐块显示；
 - Chunk 顺序和结束标记正确；
-- Gateway 不完整缓冲上游响应；
-- 中间件不破坏 SSE；
+- Gateway 级确定性测试证明第一块在第二块产生前已经到达客户端，而不是完整缓冲上游响应；
+- 测试覆盖完整 Middleware、Router 和 ReverseProxy 链路，证明中间件不破坏 SSE；
 - 有稳定的端到端验证。
 
 ### [ ] W3-M2：取消、慢客户端与失败边界
 
 包含：
 
+- 在 Gateway 定义普通请求与流式请求不同的总超时和写超时策略；
 - 客户端中途取消并向上游传播；
 - 用可重复实验观察慢客户端、写阻塞、内存和 Goroutine；
 - 禁止无界 Channel 缓冲；
-- 记录 TTFT 和 stream duration；
+- 在 Gateway 侧记录 TTFT 和 stream duration，Study Assistant 只负责触发和观察客户端行为；
 - 区分正常结束、发送前失败、流中断和用户取消；
 - 响应开始后不更换状态码，也不拼接另一个模型结果。
 
@@ -531,11 +538,11 @@ study-assistant analyze issue.md --model model-a
 - 记录模型、TTFT、总耗时、结果和人工评价；
 - 更新 streaming 和 real-model 文档。
 
-外部条件不具备时，先用行为接近真实服务的确定性 Mock 完成契约、断流、取消和错误测试，并保留待补项。
+外部条件不具备时，先用行为接近真实服务的测试内可控 Upstream 完成契约、断流、取消和错误测试，并保留待补项；只有跨进程演示或 Compose 复现需要时才扩展 Mock。
 
 验收：
 
-- Mock 与真实模型使用同一个调用面；
+- 确定性测试 Upstream、必要的 Mock 与真实模型使用同一个 Gateway 调用面；
 - 条件具备时真实答案能稳定逐块显示；
 - 客户端取消能够停止无意义工作；
 - 真实记录可复核，或待补项已明确；
@@ -881,6 +888,7 @@ pprof 不要求为了计划强行制造问题。若 Benchmark 或故障实验发
 
 | 日期 | 版本 | 调整 | 原因 |
 |---|---|---|---|
+| 2026-09-02 | v5 | 记录 Gateway 与 Study Assistant 已通过现有配置完成 Ollama 真实 SSE 流式验证；W3-M1 改为进行中并只保留 Gateway 级确定性首块转发测试和文档收口；明确 Study Assistant 与 Mock 不设独立产品路线，W3-M2 聚焦 Gateway 的流式超时、取消、背压、失败和指标 | 让计划与仓库和真实验证证据一致，把主要精力集中到 Gateway，同时保留辅助组件作为最小参考客户端和确定性验证工具 |
 | 2026-09-01 | v5 | 补齐最小协议、路由、三类 Request ID、健康检查及故障恢复运行文档；根据用户已完成的手动演示和重新通过的完整验证收口 W2-M3，当前里程碑进入 W3-M1 | W2-M3 的代码、测试、文档和端到端演示验收条件均已满足 |
 | 2026-09-01 | v5 | 记录 Gateway Request ID 的生成、传播、响应回传与 Header 所有权保护、可选客户端 ID、Gateway 与 Mock 日志关联以及健康检查已经完成；下一工作单元转为运行文档和阶段演示 | 让状态卡与代码和自动化测试证据一致，同时不在可复现文档和手动演示完成前提前勾选 W2-M3 |
 | 2026-08-28 | v5 | 完成 Gateway 与 Mock 的 Zap 结构化日志、非流式错误责任边界、单点超时归类和 Study Assistant 错误展示，下一工作单元进入 Request ID 关联 | 用真实调用暴露的问题建立可读、可测试的诊断基线，再增加跨组件关联能力 |
