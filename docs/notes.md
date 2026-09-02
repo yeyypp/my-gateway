@@ -10,7 +10,6 @@ invalid_request_error
 表示客户端提交给 Gateway 的请求不符合 Gateway 协议，例如：
 - JSON 非法；
 - messages 为空；
-- stream: true 暂不支持；
 - 缺少模型；
 - 模型不存在；
 - 请求体过大。

@@ -90,7 +90,7 @@ The Gateway currently accepts `POST /v1/chat/completions` with this minimal requ
 }
 ```
 
-`model` is a client-facing logical model. `messages` must not be empty, and only text `role` and `content` fields are supported. Streaming is not implemented yet, so `stream: true` returns HTTP 400.
+`model` is a client-facing logical model. `messages` must not be empty, and only text `role` and `content` fields are supported. `stream` may be `false` for a JSON response or `true` for an upstream that supports OpenAI-compatible SSE. The Gateway preserves the logical routing decision, rewrites the model name, and forwards the upstream response without inventing a private streaming protocol.
 
 Successful responses use a minimal Chat Completions-style object. Gateway-generated errors use a stable envelope:
 
@@ -245,15 +245,54 @@ go run ./cmd/study-assistant analyze test-data/test.txt --model local
 
 The Gateway routes the request to Ollama and rewrites `local` to `gemma4:e2b-mlx`. On environments other than OrbStack, change the Ollama `base_url` to an address reachable from the Gateway. Ollama has no `health_url` in the default configuration, so it does not affect Gateway readiness.
 
+### Stream through Ollama
+
+Add `--stream` to make the Study Assistant request an SSE response:
+
+```sh
+go run ./cmd/study-assistant analyze test-data/test.txt --model local --stream
+```
+
+The CLI prints the Gateway request ID and logical model, reports client-observed time to the first non-empty content chunk, and writes each `choices[].delta.content` value as it arrives:
+
+```text
+X-Gateway-Request-ID:<generated-id>
+Model:local
+TTFT:<milliseconds>ms
+<answer printed incrementally>
+```
+
+To inspect the raw SSE stream instead, use `curl -N` so curl does not buffer its output:
+
+```sh
+curl -N -i http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"local","messages":[{"role":"user","content":"explain Go context cancellation"}],"stream":true}'
+```
+
+A compatible upstream returns `Content-Type: text/event-stream`, one or more minimal Chat Completions chunks, and a final marker:
+
+```text
+data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"..."}}]}
+
+data: [DONE]
+
+```
+
+The standalone Mock A/B processes remain non-streaming fixtures. The deterministic streaming test uses a test-local upstream, while the `local` route provides the real Ollama demonstration.
+
 ## Current protocol limits
 
-- Only non-streaming Chat Completions requests are supported.
-- The request schema currently includes only `model`, text `messages`, and `stream`.
+- Only the minimal Chat Completions request fields `model`, text `messages`, and `stream` are supported.
+- Streaming currently relies on the selected upstream returning OpenAI-compatible `text/event-stream` chunks ending in `data: [DONE]`.
 - The Gateway re-encodes that minimal request when rewriting `model`, so unsupported or provider-specific JSON fields are not preserved yet.
+- Streaming and non-streaming requests currently share the same overall timeout and server write-timeout policy. Streaming-specific cancellation, slow-client, interruption, and metric semantics belong to W3-M2.
 - Configuration is loaded at startup; changing a route requires restarting the Gateway.
 - Readiness uses an any-healthy policy across upstreams that have a configured health URL; it is not a per-model availability guarantee.
 
 ## Verify
+
+`TestGatewaySendFirstChunkBeforeSecondChunk` uses a test-local SSE upstream that flushes its first chunk and then pauses before continuing. The client must receive that chunk through the complete Middleware, Router, and ReverseProxy chain before the test releases the upstream. This gives deterministic evidence that the Gateway does not wait for the whole response before forwarding the first chunk.
 
 ```sh
 go test -count=1 ./...
