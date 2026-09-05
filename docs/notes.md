@@ -1,49 +1,67 @@
-# Notes
+# Gateway 开发笔记
 
-## 校验请求body
-因为http body是流，在校验时，会先读出来，此时不能直接转发请求，需要把读取的body重新写回请求体
+本文按一次请求的处理过程整理：请求进入 Gateway 后的校验与 Context 传播、响应写回客户端的机制，以及 Study Assistant 对 SSE 流的解析。
 
-## 网关错误码总结
-目前感觉json返回里直接返回状态码不太对，然后有的状态码还可能有歧义，不知道ggateway的问题还是upstream的问题，后续开发后需要再修改下
+## 1. 请求处理
 
-invalid_request_error
+### 请求 Body 校验
+
+HTTP Body 是流。校验请求时会先读取 Body；如果请求还要继续向下游转发，就需要在读取后恢复 `r.Body`。
+
+### 错误分类与 HTTP 状态码
+
+错误响应需要区分客户端请求、Gateway 自身和 Upstream，后续可继续结合实际实现调整。
+
+**`invalid_request_error`**
+
 表示客户端提交给 Gateway 的请求不符合 Gateway 协议，例如：
+
 - JSON 非法；
 - messages 为空；
 - 缺少模型；
 - 模型不存在；
 - 请求体过大。
+
 通常对应 400 或 413，而且 Gateway 不应访问 Upstream。
-gateway_error
+
+**`gateway_error`**
+
 表示请求格式可能没有问题，但 Gateway 无法完成调用，例如：
+
 - Gateway 内部编码失败：500；
 - 无法连接 Upstream：502；
 - 等待 Upstream 超过 Gateway Deadline：504。
-upstream_unavailable 和 upstream_timeout 虽然名字中有 upstream，目前归入 gateway_error 是合理的。因为这份错误响应是 Gateway 生成的，而且 Gateway 只知道“我无法完成上游调用”。
 
-### 客户端请求与拦截
+`upstream_unavailable` 和 `upstream_timeout` 虽然名字中有 upstream，目前归入 `gateway_error` 是合理的。因为这份错误响应是 Gateway 生成的，而且 Gateway 只知道“我无法完成上游调用”。
+
+**客户端请求与拦截**
+
 - 400 Bad Request：非法 JSON 等客户端请求错误由 Gateway 拒绝，不访问上游。
 - 401 Unauthorized：未授权，第 1 周尚未实现。
 - 403 Forbidden：无权限，第 1 周尚未实现。
 - 413 Content Too Large：JSON 请求体超过 1 MiB，由 Gateway 拒绝，不访问上游。
 
-### 网关与上游服务异常
+**Gateway 与 Upstream 异常**
+
 - 上游返回 400 或 500：说明 Upstream 已收到并处理请求，Gateway 原样传递业务状态码。
 - 502 Bad Gateway：Gateway 尝试代理，但未成功连接上游，例如上游未启动。
 - 504 Gateway Timeout：请求已经到达上游，但超过 Gateway 的 300 ms Deadline，Gateway 取消上游请求。
 - 客户端主动取消：Gateway 不再尝试向已断开的客户端写响应，并将取消传播给 Upstream；Upstream 应监听 Context 并停止工作。
 
-## 请求超时
-gateway在给请求设定超时时，需要在原req的context上，比如
-```
+### 超时、取消与 Context 传播
+
+Gateway 设置请求超时时，需要以原请求的 Context 为父 Context：
+
+```go
 ctx, cancel := context.WithTimeout(r.Context(), timeout)
 ```
-保证客户端也可以取消后续流程，还会保留RequestID,Trace等通过Context传递的数据
 
-## Context传播
-### client -> gateway
-客户端没有把一个 Go context.Context 对象发给 Gateway。
-Gateway 的 net/http 收到请求后，会为这个请求创建
+这样既能保留 Request ID、Trace 等 Context 数据，也能让客户端断开继续取消后续流程。
+
+**Client → Gateway**
+
+客户端不会把一个 Go `context.Context` 对象发给 Gateway。Gateway 的 `net/http` 收到请求后，会为请求创建 Context：
+
 ```
 客户端断开连接
     ↓ 网络事件
@@ -51,7 +69,9 @@ Gateway 的 net/http 检测到连接断开
     ↓
 Gateway 中的 r.Context() 被取消
 ```
-### gateway内部传播
+
+**Gateway 内部传播**
+
 ```
 Gateway 入站请求 r.Context()
     │
@@ -64,7 +84,9 @@ Gateway 入站请求 r.Context()
                     │
                     └── ReverseProxy 的出站请求 Context
 ```
-### gateway -> upstream
+
+**Gateway → Upstream**
+
 ```
 Gateway 出站 Context 被取消
     ↓
@@ -76,23 +98,19 @@ Upstream 的 net/http 可能观察到连接/流被取消
     ↓
 Upstream 的 r.Context() 被取消
 ```
-### `Handler.ServeHTTP` 是同步的
+
+**同步执行边界**
 
 直接调用 `handler.ServeHTTP(w, r)` 时，当前 Goroutine 会同步执行整个
 Handler 链，直到请求处理完成后才返回。它不会自动启动新的 Goroutine；
 只有 Handler 自身显式启动异步任务时，才会产生额外的并发执行。
 
-## json相关
-这个话题非常经典，也是 Go 新手最容易混淆的地方。它们的核心区别可以用一句话概括：
+### JSON 编解码
+
+核心区别：
 
 - **Marshal / Unmarshal**：在 **内存（变量）** 和 **字节切片（[]byte）** 之间互转（**全量**操作）。
 - **Encoder / Decoder**：在 **流（io.Reader / io.Writer）** 和 **字节流** 之间互转（**增量/流式**操作）。
-
-下面我为你详细拆解，并直接关联到你的 **AI 网关 Router** 场景中。
-
----
-
-### 1. 核心区别（三维对比表）
 
 | 维度 | Marshal / Unmarshal | Encoder / Decoder |
 | :--- | :--- | :--- |
@@ -101,9 +119,7 @@ Handler 链，直到请求处理完成后才返回。它不会自动启动新的
 | **性能特点** | 小数据极快，大数据占用大量内存 | 大数据下内存占用极低，但可能多几次系统调用 |
 | **灵活性** | 无法处理“流式 JSON”（如数组里一直接收对象） | 可以处理流式 JSON，支持逐条解析 |
 
----
-
-### 2. 底层原理拆解
+**工作原理**
 
 - **Marshal（编码）**：把 Go 结构体 `stu` 序列化成 JSON 格式的 `[]byte`。  
   `json.Marshal(stu) -> []byte`
@@ -117,22 +133,21 @@ Handler 链，直到请求处理完成后才返回。它不会自动启动新的
 - **Decoder（解码）**：从 `io.Reader`（比如 `http.Request.Body`）中读取 JSON，边读边解析进 Go 结构体。  
   `json.NewDecoder(r.Body).Decode(&stu)` —— **内部维护缓冲区，不必把整个 Body 读到内存**。
 
-### 4. 在你的 AI 网关 Router 中该怎么选？
-
-回顾你之前的伪代码：
+**Router 场景中的选择**
 
 > 读取并保存请求 Body → 从 JSON 中只解析 model → 恢复 r.Body
 
-这里有**两种实现路径**，选哪一种取决于你后续是否真的需要“保存完整 Body”。
+无论选择哪种 JSON API，只要后续还要转发完整 Body，就必须考虑恢复请求体。
 
+**注意：`Decoder` 会消费流**
 
-### 6. 特别提醒：`Decoder` 的“流式”陷阱
-
-当你调用 `json.NewDecoder(r.Body).Decode(&obj)` 时，**`Decoder` 会从 `r.Body` 中消费数据**。如果解析完 `model` 后你还想把完整的 `r.Body` 传给下游，**必须提前保存**（就像你计划做的那样）。
+调用 `json.NewDecoder(r.Body).Decode(&obj)` 会消费 `r.Body`。如果解析完 `model` 后还要把完整的请求体传给下游，必须提前保存并恢复。
 
 如果直接解析完就丢掉，下游就拿不到数据了。
 
-## 响应传递
+## 2. 响应处理
+
+### ReverseProxy 如何传递响应
 
 准确地说：
 
@@ -228,7 +243,8 @@ resp.Header
 
 所以你现在把 `X-Gateway-Request-ID` 放在最外层 Middleware、调用 `next` 之前，是正确的：它能覆盖所有进入该 Middleware 的成功和失败路径，同时保持 Header 的唯一所有权。
 
-## ResponseWriter包装器
+### 包装 `ResponseWriter`
+
 不加 `Unwrap`，当前的普通非流式请求大概率仍能正常工作，所以编译器和现有测试都可能不会提醒你。
 
 原因是 `http.ResponseWriter` 接口本身只有三个方法：
@@ -245,7 +261,7 @@ type ResponseWriter interface {
 
 问题会在使用额外能力时出现。
 
-### 不加时可能发生什么
+**缺少 `Unwrap` 时的影响**
 
 底层 Writer 可能还支持：
 
@@ -289,7 +305,7 @@ errors.Is(err, http.ErrNotSupported) == true
 
 而普通 JSON 响应通常不会暴露问题。
 
-### 加上之后
+**提供 `Unwrap` 后**
 
 ```go
 func (w *responseStatusWriter) Unwrap() http.ResponseWriter {
@@ -307,7 +323,7 @@ responseStatusWriter
 Flush / Hijack / Deadline
 ```
 
-### 为什么编译器不会提醒
+**编译器为什么不会提醒**
 
 因为 Flush、Hijack 等不属于 `http.ResponseWriter` 的必需方法，而是运行时可选能力。
 
@@ -319,7 +335,7 @@ var _ http.ResponseWriter = (*responseStatusWriter)(nil)
 
 无法知道后续业务是否需要流式刷新或连接接管。
 
-### 实际记忆规则
+**使用原则**
 
 以后只要包装 `http.ResponseWriter`，可以先问一句：
 
@@ -346,19 +362,17 @@ flusher, ok := w.(http.Flusher)
 - W2 非流式请求：没有 `Unwrap` 可能也看不出问题。
 - 后续 W3 SSE：`Unwrap` 会成为重要的兼容性保障。
 
-## writeStream解析
-核心步骤
-逐行读取：将接收到的数据流按行（\n或\r\n）分割，进行逐行处理。
+## 3. Study Assistant 流式响应解析
 
-缓冲行数据：维护一个缓冲区，因为一个完整的SSE事件可能会被拆分成多个网络包传输。
+### `writeStream` 的职责与流程
 
-识别字段：判断每行的开头，识别出data:、event:等字段，并提取其后的值。
+核心步骤：
 
-检测事件边界：当遇到一个空行（即连续的两个换行符\n\n）时，意味着一个完整的事件已经结束。
-
-触发事件：将缓冲区内所有字段组合成一个完整的事件对象，交由业务逻辑处理（如解析JSON、拼接文本）。
-
-清空缓冲区：处理完毕后，清空缓冲区，准备接收下一个事件。
+1. 逐行读取 `\n` 或 `\r\n` 分隔的 SSE 数据。
+2. 缓存当前事件的字段；一个完整事件可能跨越多个网络包。
+3. 识别 `data:`、`event:` 等字段，并以空行判断事件结束。
+4. 组合当前事件，解析 JSON 并输出内容。
+5. 清空事件缓存，继续处理下一事件。
 
 `writeStream` 的职责可以概括成一句话：
 
@@ -366,7 +380,7 @@ flusher, ok := w.(http.Flusher)
 
 函数位于 [main.go](/home/shuai/projects/my-gateway/cmd/study-assistant/main.go:189)。
 
-## 1. 调用前发生了什么
+### 调用前提与职责边界
 
 `writeStream` 不是直接处理整个 HTTP 响应，它只在这些条件都满足后调用：
 
@@ -396,9 +410,7 @@ if err := writeStream(resp.Body, out, requestStarted); err != nil {
 
 它只负责处理 SSE 正文。
 
----
-
-## 2. 三个参数的含义
+### 参数
 
 ```go
 func writeStream(
@@ -408,7 +420,7 @@ func writeStream(
 ) error
 ```
 
-### `body io.Reader`
+**`body io.Reader`**
 
 通常传进来的是：
 
@@ -420,7 +432,7 @@ resp.Body
 
 当 Ollama/Gateway 返回一个新 chunk 时，`body` 才会逐渐有新内容可读。
 
-### `out io.Writer`
+**`out io.Writer`**
 
 生产环境里一般是 Cobra 的标准输出，也就是终端。
 
@@ -432,7 +444,7 @@ var output bytes.Buffer
 
 然后检查输出内容。
 
-### `requestStarted time.Time`
+**`requestStarted time.Time`**
 
 它是在执行 HTTP 请求之前记录的：
 
@@ -458,9 +470,7 @@ time.Since(requestStarted)
 
 它表示客户端观察到的 TTFT，而不仅仅是模型内部推理时间。
 
----
-
-## 3. 为什么使用 `bufio.Scanner`
+### 使用 `bufio.Scanner` 逐行读取
 
 ```go
 scanner := bufio.NewScanner(body)
@@ -500,9 +510,7 @@ scanner.Buffer(
 
 这个限制是“单行限制”，不是整个响应最多只能有 1 MiB。
 
----
-
-## 4. 三个状态变量
+### 状态变量
 
 ```go
 done := false
@@ -510,7 +518,7 @@ firstContent := true
 dataLines := make([]string, 0, 1)
 ```
 
-### `done`
+**`done`**
 
 记录是否收到：
 
@@ -526,7 +534,7 @@ data: [DONE]
 stream ended before [DONE]
 ```
 
-### `firstContent`
+**`firstContent`**
 
 用于保证 TTFT 只输出一次。
 
@@ -544,7 +552,7 @@ firstContent = false
 
 后续 chunk 只输出内容，不再输出 TTFT。
 
-### `dataLines`
+**`dataLines`**
 
 收集当前 SSE 事件里的所有 `data:` 行。
 
@@ -573,9 +581,7 @@ strings.Join(dataLines, "\n")
 
 拼成一个完整事件。
 
----
-
-## 5. 为什么要定义 `processEvent` 闭包
+### 用 `processEvent` 处理完整事件
 
 ```go
 processEvent := func() error {
@@ -620,11 +626,9 @@ data: {...}
 
 所以不需要把这些状态逐个作为参数传进去。
 
----
+`processEvent` 按以下顺序处理事件：
 
-## 6. `processEvent` 如何处理事件
-
-### 6.1 没有 `data:` 字段就忽略
+**忽略没有 `data:` 字段的事件**
 
 ```go
 if len(dataLines) == 0 {
@@ -642,7 +646,7 @@ id: 123
 
 没有 `data:`，因此什么都不做。
 
-### 6.2 合并多行并清空缓存
+**合并多行并清空缓存**
 
 ```go
 data := strings.Join(dataLines, "\n")
@@ -659,7 +663,7 @@ dataLines = dataLines[:0]
 
 它不是把已经生成的 `data` 清空，因为 `strings.Join` 已经生成了新的字符串。
 
-### 6.3 空 data 事件不处理
+**忽略空 data 事件**
 
 ```go
 if strings.TrimSpace(data) == "" {
@@ -678,7 +682,7 @@ data:
 
 这里只对判断使用 `TrimSpace`，模型真正输出的 `content` 不会被 trim，因此 `" |"` 前面的空格会保留下来。
 
-### 6.4 识别结束标记
+**识别结束标记**
 
 ```go
 if strings.TrimSpace(data) == "[DONE]" {
@@ -696,7 +700,7 @@ data: [DONE]
 
 这里没有立即从整个函数返回，而是设置 `done`。外层循环随后看到 `done`，再结束读取。
 
-### 6.5 将 JSON 解析成协议结构
+**将 JSON 解析成协议结构**
 
 ```go
 var chunk protocol.ChatCompletionStreamResponse
@@ -758,7 +762,7 @@ chunk.Choices[0].Delta.Content == " |"
 
 JSON 中额外但结构体没有声明的字段会被 `json.Unmarshal` 自动忽略。
 
-### 6.6 遍历所有 choice
+**遍历所有 choice**
 
 ```go
 for _, choice := range chunk.Choices {
@@ -782,7 +786,7 @@ for _, choice := range chunk.Choices {
 
 因为它们的 `delta.content` 为空。
 
-### 6.7 首个有效内容到达时输出 TTFT
+**首个有效内容到达时输出 TTFT**
 
 ```go
 if firstContent {
@@ -817,7 +821,7 @@ if firstContent {
 TTFT:1.824321s
 ```
 
-### 6.8 立即输出文本
+**立即输出文本**
 
 ```go
 if _, err := io.WriteString(out, content); err != nil {
@@ -851,9 +855,7 @@ io.WriteString(out, " context")
 
 如果 `out` 是普通的 `os.Stdout`，通常可以立即看到。如果未来传入的是 `bufio.Writer`，调用方还需要负责 `Flush()`。
 
----
-
-## 7. 外层 SSE 读取循环
+### 外层 SSE 读取循环
 
 核心循环是：
 
@@ -864,7 +866,7 @@ for scanner.Scan() {
 }
 ```
 
-### 空行：当前 SSE 事件结束
+**空行：当前 SSE 事件结束**
 
 ```go
 if line == "" {
@@ -899,7 +901,7 @@ data: {...}\n\n
 
 并执行 HTTP flush。
 
-### 注释行：忽略
+**注释行：忽略**
 
 ```go
 if strings.HasPrefix(line, ":") {
@@ -915,7 +917,7 @@ SSE 注释常用作心跳：
 
 它不会进入 JSON 解析。
 
-### 拆分字段名和值
+**拆分字段名和值**
 
 ```go
 field, value, found := strings.Cut(line, ":")
@@ -950,7 +952,7 @@ value == `{"foo":"bar"}`
 
 这里只删除一个空格，符合 SSE 字段解析语义，不会任意 trim 数据内容。
 
-### 忽略非 `data` 字段
+**忽略非 `data` 字段**
 
 ```go
 if field != "data" {
@@ -968,7 +970,7 @@ retry: 5000
 
 Study Assistant 当前只关心实际数据。
 
-### 保存 `data:` 内容
+**保存 `data:` 内容**
 
 ```go
 dataLines = append(dataLines, value)
@@ -976,9 +978,7 @@ dataLines = append(dataLines, value)
 
 此时不会立刻解析，因为后面可能还有另一个 `data:` 行。要等空行出现后，才调用 `processEvent`。
 
----
-
-### 8. 流结束后的处理
+### 流结束与错误处理
 
 循环可能因三种情况结束：
 
@@ -986,7 +986,7 @@ dataLines = append(dataLines, value)
 2. HTTP 响应到达 EOF
 3. 读取发生错误
 
-### 先检查读取错误
+**先检查读取错误**
 
 ```go
 if err := scanner.Err(); err != nil {
@@ -1003,7 +1003,7 @@ if err := scanner.Err(); err != nil {
 
 都会从这里返回。
 
-### 处理 EOF 前没有空行的最后一个事件
+**处理 EOF 前没有空行的最后一个事件**
 
 ```go
 if !done {
@@ -1021,7 +1021,7 @@ data: [DONE]
 
 但结尾没有额外空行，`Scanner` 到 EOF 后仍然可以在这里处理缓存中的 `[DONE]`。
 
-### 强制要求 `[DONE]`
+**强制要求 `[DONE]`**
 
 ```go
 if !done {
@@ -1047,9 +1047,7 @@ data: {"choices":[...]}
 
 否则客户端可能把只收到一半的回答误认为完整回答。
 
----
-
-### 9. 一次完整执行示例
+### 完整执行示例
 
 假设 Gateway 返回：
 
@@ -1091,9 +1089,7 @@ TTFT:1.82s
 你好，世界
 ```
 
----
-
-### 10. 这份实现当前的边界
+### 当前实现边界
 
 当前只消费：
 
