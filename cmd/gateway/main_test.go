@@ -263,3 +263,177 @@ func TestGatewaySendFirstChunkBeforeSecondChunk(t *testing.T) {
 		t.Fatalf("drain stream response: %v", err)
 	}
 }
+
+func TestCorrectTimeout(t *testing.T) {
+	const writeTimeout = 100 * time.Millisecond
+	sendSecond := make(chan struct{})
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "upstream response writer does not support flushing", http.StatusInternalServerError)
+			return
+		}
+
+		sendContent := func(content string) error {
+			resp := protocol.ChatCompletionStreamResponse{
+				Choices: []protocol.ChoiceChunk{
+					{
+						Delta: protocol.Delta{
+							Content: content,
+						},
+					},
+				},
+			}
+
+			jsonData, err := json.Marshal(resp)
+			if err != nil {
+				return err
+			}
+			if _, err := io.WriteString(w, "data: "+string(jsonData)+"\n\n"); err != nil {
+				return err
+			}
+			flusher.Flush()
+			return nil
+		}
+
+		if err := sendContent("test1"); err != nil {
+			t.Errorf("write and flush first upstream chunk: %v", err)
+			return
+		}
+
+		select {
+		case <-sendSecond:
+		case <-r.Context().Done():
+			return
+		}
+
+		if err := sendContent("test2"); err != nil {
+			t.Errorf("send test2 failed: %v", err)
+			return
+		}
+
+		if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
+			t.Errorf("write upstream stream terminator: %v", err)
+			return
+		}
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	cfg := config.Config{
+		Models: []config.Model{
+			{
+				LogicModel: "logic-model",
+				Upstream:   "test",
+				RealModel:  "real-model",
+			},
+		},
+		Upstreams: []config.Upstream{
+			{
+				Name:    "test",
+				BaseURL: upstream.URL,
+			},
+		},
+	}
+
+	modelRouter, err := buildRouter(cfg)
+	if err != nil {
+		t.Fatalf("build Gateway router: %v", err)
+	}
+	handler := middleware.GetGatewayRequestID(
+		middleware.LogRequest(
+			middleware.ValidateJSONRequest(
+				middleware.RequestTimeout(writeTimeout)(modelRouter),
+			),
+		),
+	)
+
+	server := httptest.NewUnstartedServer(handler)
+	server.Config.WriteTimeout = writeTimeout
+	server.Start()
+	defer server.Close()
+
+	chatReq := protocol.ChatCompletionRequest{
+		Model: "logic-model",
+		Messages: []protocol.Message{
+			{
+				Role:    "user",
+				Content: "test",
+			},
+		},
+		Stream: true,
+	}
+	jsonData, err := json.Marshal(chatReq)
+	if err != nil {
+		t.Fatalf("encode streaming chat request: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/chat/completions", bytes.NewReader(jsonData))
+	if err != nil {
+		t.Fatalf("create streaming Gateway request: %v", err)
+	}
+
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("send streaming request through Gateway: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected Gateway status %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("expected Gateway Content-Type %q, got %q", "text/event-stream", got)
+	}
+
+	var contents []string
+	doneReceived := false
+	secondReleased := false
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if len(line) == 0 {
+			continue
+		}
+		before, after, found := strings.Cut(line, ":")
+		if !found || strings.TrimSpace(before) != "data" {
+			t.Fatalf("expected first SSE line to use the data field, got %q", line)
+		}
+		data := strings.TrimSpace(after)
+		if data == "[DONE]" {
+			doneReceived = true
+			break
+		}
+		var chunk protocol.ChatCompletionStreamResponse
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			t.Fatalf("decode stream chunk: %v", err)
+		}
+		if len(chunk.Choices) != 1 {
+			t.Fatalf("expected one choice in stream chunk, got %+v", chunk.Choices)
+		}
+		contents = append(contents, chunk.Choices[0].Delta.Content)
+		if !secondReleased {
+			if contents[0] != "test1" {
+				t.Fatalf("expected first stream chunk content %q, got %q", "test1", contents[0])
+			}
+			time.Sleep(2 * writeTimeout)
+			close(sendSecond)
+			secondReleased = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("read streaming Gateway response: %v", err)
+	}
+	if len(contents) != 2 || contents[0] != "test1" || contents[1] != "test2" {
+		t.Fatalf("expected stream contents %q, got %q", []string{"test1", "test2"}, contents)
+	}
+	if !doneReceived {
+		t.Fatal("expected Gateway stream to include data: [DONE]")
+	}
+}

@@ -128,6 +128,23 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 func RequestTimeout(timeout time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			chatReq, ok := r.Context().Value(ChatReqKey).(protocol.ChatCompletionRequest)
+			if !ok {
+				handlers.SendError(w, protocol.APIError{
+					Message: "chatReq is required",
+					Type:    protocol.ErrorTypeInvalidRequest,
+					Code:    protocol.ErrorCodeMissingRequiredParameter,
+				}, http.StatusBadRequest)
+				return
+			}
+
+			if chatReq.Stream {
+				controller := http.NewResponseController(w)
+				controller.SetWriteDeadline(time.Time{})
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			ctx, cancel := context.WithTimeout(r.Context(), timeout)
 			defer cancel()
 

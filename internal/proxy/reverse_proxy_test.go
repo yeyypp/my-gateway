@@ -388,6 +388,12 @@ func TestClientCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	ctx = context.WithValue(ctx, middleware.ChatReqKey, protocol.ChatCompletionRequest{
+		Model: "logic-model",
+		Messages: []protocol.Message{
+			{Role: "user", Content: "test"},
+		},
+	})
 
 	req := httptest.NewRequestWithContext(ctx, "POST", "http://test", nil)
 	recorder := httptest.NewRecorder()

@@ -65,7 +65,7 @@ func runGateway(config config.Config) error {
 	server := &http.Server{
 		Addr:         ":8080",
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: 30 * time.Second, // 网关给客户端写响应的超时时间，会在收到请求header时重置
 		IdleTimeout:  30 * time.Second,
 	}
 	mux := http.NewServeMux()
