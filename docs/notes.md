@@ -1117,3 +1117,41 @@ choices[].delta.content
 - 当前仓库里的 [main_test.go](/home/shuai/projects/my-gateway/cmd/study-assistant/main_test.go:1) 只有 225 行，我没有看到针对 `writeStream`、多块 SSE、缺少 `[DONE]` 或首块及时输出的测试。因此实现逻辑已经存在，但这些行为在当前工作树中还没有自动化测试保护。
 
 总体来说，这个实现分成了很清楚的两层：外层按 SSE 协议确定事件边界，内层把完整 `data` 事件解析成 Chat Completions chunk。最关键的设计点就是：**空行才结束一个 SSE 事件，`data:` 行本身不等于一个完整事件。**
+
+## 4. Gateway 流式测试复盘
+
+### 慢客户端背压测试
+
+这个测试要证明的不是“Upstream 写得很慢”，而是下面这条因果链：
+
+```text
+客户端停止读取
+    ↓
+Gateway 向客户端的写入逐渐阻塞
+    ↓
+Gateway 停止继续读取 Upstream
+    ↓
+Upstream 的写入进度停滞
+```
+
+初版 `TestSlowClientByShuai` 的总体方向是正确的：客户端先读取第一个 SSE chunk，然后停止读取；Upstream 持续写入大块数据；测试观察写入次数是否停止增长。但初版还有几个证据缺口：
+
+- 不能在一次可能阻塞的 `Write` 后关闭 channel 来表示“当前写入已经阻塞”。如果 `Write` 正在阻塞，后面的代码尚未执行，观察者不会及时收到信号。
+- 只等待一个 channel 无法区分“还没开始大量写入”和“已经开始写入并因背压停滞”。
+- 忽略写入错误后仍增加计数，会把失败的写入误认为成功进度。
+- 每次循环都重新构造并编码 JSON，会把序列化开销混入背压实验。
+- 只确认 Upstream 停止还不够，还需要确认取消后 Upstream Context 和 Gateway Handler 都结束。
+
+修正后的测试把证据拆成几个明确阶段：
+
+1. Upstream 写出并 Flush 第一个合法 SSE chunk，客户端确认已经收到。
+2. Upstream 开始连续写入预先构造的大块 SSE 数据，并通过独立信号证明写入循环已经启动。
+3. 客户端停止读取；测试周期性采样“已成功完成的写入次数”。计数持续一段时间不再增长，才视为观察到背压。
+4. 测试同时确认 Upstream 没有完成全部写入，避免把正常结束误判成阻塞。
+5. 客户端取消请求后，分别确认 Upstream 看见 `context.Canceled`，以及 Gateway Handler 在限定时间内退出。
+
+这里的 channel 用来确定事件顺序，计数采样用来观察写入进度，定时器只作为失败上限和“持续无进度”的判定窗口。三者职责不同：channel 不能直接证明一个阻塞中的 `Write`，而固定等待一段时间也不能单独证明因果关系。
+
+测试中的洪泛事件只需要制造足够的网络写压力，不需要每次都表示一个完整的 Chat Completions chunk。因此预先构造字节切片可以减少无关的 JSON 编码开销，让测试主要观察 HTTP 传输链上的背压。
+
+原先注释掉的完整测试代码已从 `cmd/gateway/main_test.go` 移除；如果需要查看逐行演变，可以通过 Git 历史回看。测试文件保留最终可执行证据，这里保留设计思路和踩坑原因。
