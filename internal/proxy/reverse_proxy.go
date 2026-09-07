@@ -70,6 +70,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 			return nil
 		},
 
+		// 处理下游响应开始前的 RoundTrip / ModifyResponse 错误，不处理响应体复制阶段的错误。
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
 			var netErr net.Error
 			fields := append(middleware.GetReqIDFromCTX(req.Context()),
