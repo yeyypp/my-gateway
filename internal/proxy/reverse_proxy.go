@@ -55,6 +55,10 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 				)
 				if chatReq, ok := resp.Request.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest); ok {
 					fields = append(fields, zap.String("logical_model", chatReq.Model))
+					fields = append(fields, zap.Bool("stream", chatReq.Stream))
+					if chatReq.Stream {
+						resp.Body = newSSETrackBody(resp.Body, fields)
+					}
 				}
 			}
 			fields = append(fields,
@@ -136,4 +140,29 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		proxy.ServeHTTP(w, proxyReq)
 	}), nil
 
+}
+
+func newSSETrackBody(src io.ReadCloser, fields []zap.Field) *sseTrackBody {
+	return &sseTrackBody{
+		src:    src,
+		fields: fields,
+	}
+}
+
+type sseTrackBody struct {
+	src    io.ReadCloser
+	fields []zap.Field
+}
+
+func (s *sseTrackBody) Read(p []byte) (int, error) {
+	n, err := s.src.Read(p)
+	if err != nil {
+		log.Error("read from upstream interrupted", s.fields...)
+		return n, err
+	}
+	return n, err
+}
+
+func (s *sseTrackBody) Close() error {
+	return s.src.Close()
 }
