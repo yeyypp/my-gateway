@@ -121,8 +121,8 @@
 - 当前阶段：阶段 A，最小 AI Gateway
 - 当前主题：W3 SSE 与流式可靠性
 - 当前里程碑：W3-M2 取消、慢客户端与失败边界
-- 状态：进行中；W3-M1 已收口，正在推进普通与流式请求的生命周期分离
-- 最近代码进度更新时间：2026-09-05
+- 状态：进行中；普通与流式请求的生命周期已分离，流式取消、慢客户端背压和 Upstream 中断已有确定性测试，正在补齐生命周期分类与 Gateway 侧流式观测
+- 最近代码进度更新时间：2026-09-07
 - 当前分支：master
 
 已经验证：
@@ -152,16 +152,21 @@
 - Study Assistant 已能解析最小 `chat.completion.chunk`、输出 `choices[].delta.content`、识别 `data: [DONE]`，并显示逻辑模型、Gateway Request ID 和用户侧 TTFT；用户已完成 `Study Assistant → Gateway → Ollama` 真实流式请求，确认答案可正常逐块显示。
 - Gateway 级确定性测试使用测试内可控 SSE Upstream：Upstream 写入并 Flush 第一块后暂停继续输出，客户端必须先通过完整 Middleware、Router 和 ReverseProxy 链路收到第一块，测试才允许 Upstream 结束响应；该测试不依赖固定 Sleep，并已通过重复运行、Race 和全量测试。
 - 运行文档已覆盖 `stream:true` 的最小协议、Study Assistant 与 `curl -N` 用法、SSE chunk、`data: [DONE]`、客户端 TTFT、首块及时转发证据和当前流式边界；2026-09-02 执行全量 Test、Race、Vet、Build 和 `git diff --check`，全部通过。
+- 普通请求继续受总超时和 Server `WriteTimeout` 保护；通过校验的 `stream:true` 请求不再使用普通请求总时长，并清除当前流式响应的写 Deadline。`TestCorrectTimeout` 证明流式响应跨过普通请求预算后仍能按 `test1 → test2 → [DONE]` 完成，原有非流式超时测试继续证明超时返回 504。
+- `TestCancelAfterFirstStreamChunk` 通过真实 Client → Gateway → Upstream 链路证明：客户端收到首块后取消，客户端读取以 `context.Canceled` 结束，取消会继续传播到 Upstream 的请求 Context。
+- `TestSlowClientBackPressure` 证明客户端收到首块后停止读取时，Gateway 的直接流式转发会让 Upstream 的成功写入进度停滞，而不是在应用层无限接收全部数据；客户端取消后，Upstream Context 和 Gateway Handler 都能在限定时间内结束。该证据尚不替代里程碑要求的内存和 Goroutine 观察。
+- `TestUpstreamCrash` 证明客户端收到首块后，Upstream 连接突然中断会表现为客户端流读取错误，不会被当作正常流结束；当前尚未完成 Gateway 对流中断的独立结束分类和指标记录。
+- 2026-09-07 将重复的流式测试配置、真实 HTTP 请求、SSE 写入和事件读取收敛为小型测试辅助逻辑，保留各测试中的 channel、取消、背压和断连因果编排；旧版慢客户端学习代码的设计思路和证据缺口已迁移到 `docs/notes.md`。Gateway 流式测试重复运行 10 次、全量 Test、Gateway Race 和 `git diff --check` 均通过。
 
 当前待完成的工作单元：
 
-1. 分离普通与流式请求的生命周期策略：普通请求继续受有限总时长保护，健康流式响应不因普通请求的总超时或写超时被截断，并保留客户端取消向 Upstream 的传播。
+1. 建立 Gateway 流式生命周期观测与结束分类：记录 Gateway TTFT 和 stream duration，区分正常结束、用户取消与 Upstream 中途断开，并用确定性测试证明日志和测量边界不会在收到响应头时提前结束。
 
 下一次可见成果：
 
-> 普通请求超时继续返回稳定的 504；流式请求可以跨过普通请求预算继续收到后续块和 `[DONE]`；客户端取消仍能及时停止 Upstream。
+> 一次流式请求结束后，Gateway 能给出基于真实首块和结束时刻的 TTFT、stream duration 与结束原因；正常结束、用户取消和 Upstream 中断不会被记录成同一种结果。
 
-当前没有外部阻塞；W2 和 W3-M1 已完成。W3-M2 尚未验收，不提前把现有普通请求取消测试视为流式取消、慢客户端或失败边界的完成证据。
+当前没有外部阻塞；W2 和 W3-M1 已完成。W3-M2 已具备超时分离、首块后取消、慢客户端背压和 Upstream 中断的自动化证据，但 Gateway TTFT / stream duration、结束分类日志、内存与 Goroutine 观察、运行文档更新以及最终 Vet / Build 门禁尚未完成，因此本里程碑继续保持进行中。
 
 ## 1.2 已完成摘要
 
