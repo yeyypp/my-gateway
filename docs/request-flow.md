@@ -83,4 +83,4 @@ ModelRouter 持有的是 `model → http.Handler` 映射，而不是在每次请
 - Route、Upstream 和真实模型映射在启动时从配置生成，修改后需要重启。
 - 协议只保留 `model`、文本 `messages` 和 `stream`，Provider 特有字段会在请求重编码时丢失。
 - Mock A/B 继续提供非流式确定性响应；流式工程证据由测试内 Upstream 和真实 Ollama 链路提供。
-- 普通与流式请求仍共享 30 秒总超时和 Server WriteTimeout；流式超时、取消、慢客户端、背压、断流与指标语义将在 W3-M2 处理。
+- 普通请求保留 30 秒总超时和 Server WriteTimeout；通过校验的流式请求绕过普通总超时并清除写 Deadline。取消、背压和断流已有测试，Gateway 流式指标与结束分类按[当前计划](AI_GATEWAY_PLAN.md)继续补齐。

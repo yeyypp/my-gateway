@@ -1,5 +1,7 @@
 # My Gateway
 
+Current roadmap: [AI Gateway project plan](docs/AI_GATEWAY_PLAN.md).
+
 A small Go AI Gateway that exposes a minimal Chat Completions-style endpoint, routes logical models to configured upstreams, and rewrites them to provider-specific model names. The Study Assistant is a reference client: it knows only the Gateway address and a logical model name.
 
 ## Current architecture
@@ -286,7 +288,7 @@ The standalone Mock A/B processes remain non-streaming fixtures. The determinist
 - Only the minimal Chat Completions request fields `model`, text `messages`, and `stream` are supported.
 - Streaming currently relies on the selected upstream returning OpenAI-compatible `text/event-stream` chunks ending in `data: [DONE]`.
 - The Gateway re-encodes that minimal request when rewriting `model`, so unsupported or provider-specific JSON fields are not preserved yet.
-- Streaming and non-streaming requests currently share the same overall timeout and server write-timeout policy. Streaming-specific cancellation, slow-client, interruption, and metric semantics belong to W3-M2.
+- Non-streaming requests retain the overall timeout and server write deadline; validated streaming requests bypass that overall timeout and clear the write deadline. Cancellation, backpressure, and upstream interruption have dedicated tests; Gateway streaming metrics and end-reason classification remain planned work in the [current roadmap](docs/AI_GATEWAY_PLAN.md).
 - Configuration is loaded at startup; changing a route requires restarting the Gateway.
 - Readiness uses an any-healthy policy across upstreams that have a configured health URL; it is not a per-model availability guarantee.
 
