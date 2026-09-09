@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -56,9 +57,6 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 				if chatReq, ok := resp.Request.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest); ok {
 					fields = append(fields, zap.String("logical_model", chatReq.Model))
 					fields = append(fields, zap.Bool("stream", chatReq.Stream))
-					if chatReq.Stream {
-						resp.Body = newSSETrackBody(resp.Body, fields)
-					}
 				}
 			}
 			fields = append(fields,
@@ -68,6 +66,10 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 			)
 			if upstreamRequestID := resp.Header.Get(protocol.HeaderUpstreamRequestID); upstreamRequestID != "" {
 				fields = append(fields, zap.String("upstream_request_id", upstreamRequestID))
+			}
+
+			if isSSEContentType(resp.Header.Get("Content-Type")) {
+				resp.Body = newSSETrackBody(resp.Body, fields)
 			}
 
 			log.Info("upstream response received", fields...)
@@ -142,6 +144,11 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 
 }
 
+func isSSEContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && mediaType == "text/event-stream"
+}
+
 func newSSETrackBody(src io.ReadCloser, fields []zap.Field) *sseTrackBody {
 	return &sseTrackBody{
 		src:    src,
@@ -156,9 +163,9 @@ type sseTrackBody struct {
 
 func (s *sseTrackBody) Read(p []byte) (int, error) {
 	n, err := s.src.Read(p)
-	if err != nil {
-		log.Error("read from upstream interrupted", s.fields...)
-		return n, err
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
+		fields := append(s.fields, zap.Error(err))
+		log.Error("read from upstream interrupted", fields...)
 	}
 	return n, err
 }

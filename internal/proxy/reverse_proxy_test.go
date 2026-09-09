@@ -17,6 +17,8 @@ import (
 	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/protocol"
+
+	"go.uber.org/zap"
 )
 
 func newTestProxy(t *testing.T, upstreamURL string) http.Handler {
@@ -465,4 +467,85 @@ func TestInvalidJSON(t *testing.T) {
 	if got := result.Header.Get("Content-Type"); got != "application/json" {
 		t.Fatalf("expected Content-Type %q, got %q", "application/json", got)
 	}
+}
+
+func TestSSETrackBodyClassifiesReadErrors(t *testing.T) {
+	testCases := []struct {
+		name    string
+		readErr error
+		wantLog bool
+	}{
+		{name: "normal EOF", readErr: io.EOF, wantLog: false},
+		{name: "client cancellation", readErr: context.Canceled, wantLog: false},
+		{name: "upstream interruption", readErr: errors.New("upstream connection reset"), wantLog: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			logPath := t.TempDir() + "/gateway.log"
+			if err := log.Init("info", logPath); err != nil {
+				t.Fatalf("initialize logger: %v", err)
+			}
+
+			src := &fixedErrorReadCloser{err: tc.readErr}
+			initialFields := []zap.Field{zap.String("gateway_request_id", "gateway-123")}
+			body := newSSETrackBody(src, initialFields)
+
+			if _, err := body.Read(make([]byte, 1)); !errors.Is(err, tc.readErr) {
+				t.Fatalf("read: expected error %v, got %v", tc.readErr, err)
+			}
+			if len(body.fields) != len(initialFields) {
+				t.Fatalf("read must not mutate stored fields: expected length %d, got %d", len(initialFields), len(body.fields))
+			}
+			if err := body.Close(); err != nil {
+				t.Fatalf("close wrapped body: %v", err)
+			}
+			if !src.closed {
+				t.Fatal("close must be forwarded to source body")
+			}
+
+			if err := log.Sync(); err != nil {
+				t.Fatalf("sync logger: %v", err)
+			}
+			content, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("read log: %v", err)
+			}
+
+			if !tc.wantLog {
+				if len(strings.TrimSpace(string(content))) != 0 {
+					t.Fatalf("expected no interruption log, got %s", content)
+				}
+				return
+			}
+
+			var entry map[string]any
+			if err := json.Unmarshal(content, &entry); err != nil {
+				t.Fatalf("decode interruption log: %v", err)
+			}
+			if got := entry["msg"]; got != "read from upstream interrupted" {
+				t.Fatalf("expected interruption message, got %#v", got)
+			}
+			if got := entry["error"]; got != tc.readErr.Error() {
+				t.Fatalf("expected error %q, got %#v", tc.readErr, got)
+			}
+			if got := entry["gateway_request_id"]; got != "gateway-123" {
+				t.Fatalf("expected Gateway request ID in log, got %#v", got)
+			}
+		})
+	}
+}
+
+type fixedErrorReadCloser struct {
+	err    error
+	closed bool
+}
+
+func (r *fixedErrorReadCloser) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+func (r *fixedErrorReadCloser) Close() error {
+	r.closed = true
+	return nil
 }
