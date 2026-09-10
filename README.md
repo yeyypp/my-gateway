@@ -13,12 +13,13 @@ Study Assistant or HTTP client
   → ModelRouter
       ├── model-a → mock-a / model-a
       ├── model-b → mock-b / model-b
-      └── local   → ollama / gemma4:e2b-mlx
+      ├── local   → ollama / gemma4:e2b-mlx
+      └── flash / pro → deepseek / deepseek-v4-*
   → model rewrite and reverse proxy
   → upstream response and correlated logs
 ```
 
-The Gateway loads model routes, upstream addresses, and optional health URLs from configuration before it starts listening. Clients do not need the selected upstream address or its real model name.
+The Gateway loads model routes, upstream addresses, optional health URLs, and optional upstream credential environment names from configuration before it starts listening. Clients do not need the selected upstream address or its real model name.
 
 ## Project layout
 
@@ -76,7 +77,7 @@ The services listen on these addresses:
 go run ./cmd/gateway start --config path/to/config.yaml
 ```
 
-The Gateway validates the complete configuration before listening. Invalid URLs, duplicate names, missing fields, and model references to unknown upstreams cause startup to fail.
+The Gateway validates the complete configuration before listening. Invalid URLs, duplicate names, missing fields, and model references to unknown upstreams cause startup to fail. A missing upstream credential does not stop startup; readiness reports it instead.
 
 ## Minimal protocol
 
@@ -92,7 +93,7 @@ The Gateway currently accepts `POST /v1/chat/completions` with this minimal requ
 }
 ```
 
-`model` is a client-facing logical model. `messages` must not be empty, and only text `role` and `content` fields are supported. `stream` may be `false` for a JSON response or `true` for an upstream that supports OpenAI-compatible SSE. The Gateway preserves the logical routing decision, rewrites the model name, and forwards the upstream response without inventing a private streaming protocol.
+`model` is a client-facing logical model. `messages` must not be empty, and only text `role` and `content` fields are supported. `stream` may be `false` for a JSON response or `true` for an upstream that supports OpenAI-compatible SSE. The Gateway preserves the logical routing decision, rewrites the model name, and forwards the upstream response without inventing a private streaming protocol. Only the top-level `model` field is rewritten; every other field is forwarded with the JSON value the client sent.
 
 Successful responses use a minimal Chat Completions-style object. Gateway-generated errors use a stable envelope:
 
@@ -107,7 +108,7 @@ Successful responses use a minimal Chat Completions-style object. Gateway-genera
 }
 ```
 
-Invalid JSON, unsupported values, and unknown models return 400; an oversized request body returns 413; an unreachable upstream returns 502; and a Gateway or network timeout returns 504. If an upstream returns an explicit HTTP response, its status and body pass through the Gateway.
+Invalid JSON, unsupported values, and unknown models return 400; an oversized request body returns 413; an unreachable upstream returns 502; and a Gateway or network timeout returns 504. If an upstream returns an explicit HTTP response, its status and body pass through the Gateway. Gateway-generated errors use the envelope above, while an upstream error keeps the provider's own shape, so the two sources do not share one error vocabulary.
 
 ## Configure routing
 
@@ -117,7 +118,7 @@ Each route combines three identities:
 - `upstream`: the configured service that receives the request;
 - `real_model`: the model name understood by that service.
 
-The default configuration includes two mocks and an Ollama service reachable from an OrbStack Linux VM:
+The default configuration includes two mocks, an Ollama service reachable from an OrbStack Linux VM, and a DeepSeek upstream:
 
 ```yaml
 upstreams:
@@ -129,6 +130,9 @@ upstreams:
     health_url: http://localhost:8092/readyz
   - name: ollama
     base_url: http://host.orb.internal:11434
+  - name: deepseek
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
 
 models:
   - logic_model: model-a
@@ -140,7 +144,15 @@ models:
   - logic_model: local
     upstream: ollama
     real_model: gemma4:e2b-mlx
+  - logic_model: flash
+    upstream: deepseek
+    real_model: deepseek-v4-flash
+  - logic_model: pro
+    upstream: deepseek
+    real_model: deepseek-v4-pro
 ```
+
+`api_key_env` names the environment variable that holds the credential the Gateway sends to that upstream; the secret itself is never written to the config file. A missing or unset variable does not stop the Gateway, and readiness reports that upstream as unavailable.
 
 To route the client-visible `model-a` to Mock B, change its target and restart the Gateway:
 
@@ -212,7 +224,7 @@ Logs intentionally omit complete Authorization values, file contents, and raw Ch
 | Endpoint | Meaning |
 |---|---|
 | Gateway `GET /healthz` | The Gateway process is alive. It does not call an upstream. |
-| Gateway `GET /readyz` | At least one upstream with a configured `health_url` is currently reachable and ready. If no upstream has a health URL, readiness succeeds. |
+| Gateway `GET /readyz` | At least one participating upstream is usable. Upstreams with a `health_url` are probed; upstreams that declare `api_key_env` take part as well and count as unavailable while that variable is unset. If no upstream participates, readiness succeeds. |
 | Mock `GET /readyz` | That Mock process is ready to receive requests. |
 
 Check the Gateway endpoints with:
@@ -285,12 +297,12 @@ The standalone Mock A/B processes remain non-streaming fixtures. The determinist
 
 ## Current protocol limits
 
-- Only the minimal Chat Completions request fields `model`, text `messages`, and `stream` are supported.
+- Only the minimal Chat Completions request fields `model`, text `messages`, and `stream` are read by the Gateway. Other JSON fields are forwarded untouched.
 - Streaming currently relies on the selected upstream returning OpenAI-compatible `text/event-stream` chunks ending in `data: [DONE]`.
-- The Gateway re-encodes that minimal request when rewriting `model`, so unsupported or provider-specific JSON fields are not preserved yet.
+- Rewriting `model` re-serializes the request body, so provider-specific fields keep their JSON values while key order, whitespace, and HTML-escaped characters can change.
 - Non-streaming requests retain the overall timeout and server write deadline; validated streaming requests bypass that overall timeout and clear the write deadline. Cancellation, backpressure, and upstream interruption have dedicated tests; Gateway streaming metrics and end-reason classification remain planned work in the [current roadmap](docs/AI_GATEWAY_PLAN.md).
 - Configuration is loaded at startup; changing a route requires restarting the Gateway.
-- Readiness uses an any-healthy policy across upstreams that have a configured health URL; it is not a per-model availability guarantee.
+- Readiness uses an any-healthy policy across upstreams that have a configured health URL or a declared `api_key_env`; it is not a per-model availability guarantee, and an upstream without a health URL is only reported by its credentials, not by a probe.
 
 ## Verify
 

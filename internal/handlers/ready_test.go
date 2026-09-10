@@ -182,8 +182,8 @@ func TestReadyCheckReportsMissingAPIKeyWithoutProbing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for an unset API key environment variable")
 	}
-	if !strings.Contains(err.Error(), "GATEWAY_TEST_MISSING_KEY") || !strings.Contains(err.Error(), "deepseek") {
-		t.Fatalf("expected the error to name the upstream and the env var, got %v", err)
+	if !strings.Contains(err.Error(), "GATEWAY_TEST_MISSING_KEY") {
+		t.Fatalf("expected the error to name the missing env var, got %v", err)
 	}
 	if got := probes.Load(); got != 0 {
 		t.Fatalf("a missing API key must not probe the upstream, got %d probes", got)

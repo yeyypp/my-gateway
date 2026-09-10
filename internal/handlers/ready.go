@@ -67,9 +67,7 @@ func (rc *ReadyCheck) CheckUpstreams(w http.ResponseWriter, r *http.Request) {
 
 	var available int
 	for err := range resCh {
-		if err != nil {
-			log.Error("upstream unavailable", zap.Error(err))
-		} else {
+		if err == nil {
 			available++
 		}
 	}
@@ -83,7 +81,9 @@ func (rc *ReadyCheck) CheckUpstreams(w http.ResponseWriter, r *http.Request) {
 
 func (rc *ReadyCheck) checkIfUpstreamReady(ctx context.Context, upstream config.Upstream) error {
 	if upstream.APIKeyEnv != "" && upstream.APIKey == "" {
-		return fmt.Errorf("upstream %q: API key env %q is not set", upstream.Name, upstream.APIKeyEnv)
+		err := fmt.Errorf("API key env %q is not set", upstream.APIKeyEnv)
+		log.Error("upstream unavailable", zap.Error(err), zap.String("upstream", upstream.Name))
+		return err
 	}
 	if upstream.HealthURL == "" {
 		return nil
@@ -94,17 +94,21 @@ func (rc *ReadyCheck) checkIfUpstreamReady(ctx context.Context, upstream config.
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream.HealthURL, nil)
 	if err != nil {
+		log.Error("upstream unavailable", zap.Error(err), zap.String("upstream", upstream.Name))
 		return err
 	}
 
 	resp, err := rc.client.Do(req)
 	if err != nil {
+		log.Error("upstream unavailable", zap.Error(err), zap.String("upstream", upstream.Name))
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("upstream %q returned health status %d", upstream.Name, resp.StatusCode)
+		err = fmt.Errorf("returned health status %d", resp.StatusCode)
+		log.Error("upstream unavailable", zap.Error(err), zap.String("upstream", upstream.Name))
+		return err
 	}
 	return nil
 }

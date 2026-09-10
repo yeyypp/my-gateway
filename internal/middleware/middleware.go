@@ -73,12 +73,6 @@ func GetRequestBodyFromCTX(ctx context.Context) ([]byte, bool) {
 
 func ValidateJSONRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		method := r.Method
-		if method != http.MethodPost {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		// Limit the request body size to prevent abuse
 		limitedBody := http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		defer limitedBody.Close()

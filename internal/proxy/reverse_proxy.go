@@ -30,7 +30,7 @@ type RoutePolicy struct {
 	UpstreamModel string
 }
 
-func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport, apiKey string) (http.Handler, error) {
+func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport, apiKey string) (*Proxy, error) {
 	if routePolicy.UpstreamURL == "" || routePolicy.UpstreamModel == "" || transport == nil {
 		return nil, errors.New("invalid policy or transport")
 	}
@@ -44,6 +44,10 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport, apiKe
 			preq.SetURL(target)
 			preq.SetXForwarded()
 			preq.Out.Header.Del(protocol.HeaderClientRequestID)
+			preq.Out.Header.Del("Authorization")
+			if preq.Out.Header.Get("Content-Type") == "" {
+				preq.Out.Header.Set("Content-Type", "application/json")
+			}
 			if len(apiKey) != 0 {
 				preq.Out.Header.Set("Authorization", "Bearer "+apiKey)
 			}

@@ -6,7 +6,7 @@
 
 ### 请求 Body 校验
 
-HTTP Body 是流。校验请求时会先读取 Body；如果请求还要继续向下游转发，就需要在读取后恢复 `r.Body`。
+HTTP Body 是流。校验请求时会先读取 Body。当前实现把读到的原始字节放进 Context 供改写阶段重建转发体，同时恢复 `r.Body` 让请求对象保持完整；转发不再依赖 `r.Body`。现状见[请求链路](request-flow.md)。
 
 ### 错误分类与 HTTP 状态码
 
@@ -135,13 +135,13 @@ Handler 链，直到请求处理完成后才返回。它不会自动启动新的
 
 **Router 场景中的选择**
 
-> 读取并保存请求 Body → 从 JSON 中只解析 model → 恢复 r.Body
+> 读取并保存请求 Body → 从 JSON 中只解析 model → 把原始字节放进 Context → 恢复 r.Body
 
-无论选择哪种 JSON API，只要后续还要转发完整 Body，就必须考虑恢复请求体。
+无论选择哪种 JSON API，只要后续还要转发完整 Body，就必须先保存原始字节。当前实现把它放进 Context，改写阶段据此重建转发体；恢复 `r.Body` 只是让请求对象保持完整。
 
 **注意：`Decoder` 会消费流**
 
-调用 `json.NewDecoder(r.Body).Decode(&obj)` 会消费 `r.Body`。如果解析完 `model` 后还要把完整的请求体传给下游，必须提前保存并恢复。
+调用 `json.NewDecoder(r.Body).Decode(&obj)` 会消费 `r.Body`。如果解析完 `model` 后还要把完整的请求体传给下游，必须提前保存。
 
 如果直接解析完就丢掉，下游就拿不到数据了。
 

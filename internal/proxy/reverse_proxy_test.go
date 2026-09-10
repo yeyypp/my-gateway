@@ -264,9 +264,9 @@ func TestUpstreamAuthorizationInjection(t *testing.T) {
 			wantAuthorization: "Bearer sk-gateway-upstream",
 		},
 		{
-			name:              "upstream without API key keeps the client credential",
+			name:              "client credential never reaches an upstream without its own key",
 			clientAuth:        "Bearer sk-client",
-			wantAuthorization: "Bearer sk-client",
+			wantAuthorization: "",
 		},
 		{
 			name:              "no credentials at all",
@@ -433,8 +433,8 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 	if gotRequest.contentType != "application/json" {
 		t.Errorf("expected upstream Content-Type %q, got %q", "application/json", gotRequest.contentType)
 	}
-	if gotRequest.authorization != "Bearer test-secret" {
-		t.Errorf("expected upstream Authorization %q, got %q", "Bearer test-secret", gotRequest.authorization)
+	if gotRequest.authorization != "" {
+		t.Errorf("client Authorization must not be forwarded upstream, got %q", gotRequest.authorization)
 	}
 	if gotRequest.userAgent != "gateway-header-test" {
 		t.Errorf("expected upstream User-Agent %q, got %q", "gateway-header-test", gotRequest.userAgent)
