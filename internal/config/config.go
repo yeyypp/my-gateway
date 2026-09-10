@@ -28,6 +28,8 @@ type Upstream struct {
 	Name      string `yaml:"name"`
 	BaseURL   string `yaml:"base_url"`
 	HealthURL string `yaml:"health_url"`
+	APIKeyEnv string `yaml:"api_key_env"`
+	APIKey    string `yaml:"-"`
 }
 
 func Load(configFile string) (Config, error) {
@@ -39,6 +41,12 @@ func Load(configFile string) (Config, error) {
 	var config Config
 	if err := yaml.NewDecoder(bytes.NewReader(content)).Decode(&config); err != nil {
 		return Config{}, err
+	}
+
+	for index := range config.Upstreams {
+		if env := config.Upstreams[index].APIKeyEnv; env != "" {
+			config.Upstreams[index].APIKey = os.Getenv(env)
+		}
 	}
 	if err := validateConfig(config); err != nil {
 		return Config{}, err
@@ -71,7 +79,6 @@ func validateConfig(config Config) error {
 				return fmt.Errorf("upstream %q: %w", upstream.Name, err)
 			}
 		}
-
 		exists[upstream.Name] = struct{}{}
 	}
 

@@ -9,6 +9,7 @@ upstreams:
     base_url: http://host.orb.internal:11434
   - name: deepseek
     base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
 
 models:
   - logic_model: model-a
@@ -23,3 +24,6 @@ models:
   - logic_model: flash 
     upstream: deepseek
     real_model: deepseek-v4-flash 
+  - logic_model: pro
+    upstream: deepseek
+    real_model: deepseek-v4-pro

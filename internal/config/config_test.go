@@ -146,6 +146,18 @@ func TestValidateConfig(t *testing.T) {
 				Models: []Model{validModel},
 			},
 		},
+		{
+			name: "API key resolved from environment",
+			config: Config{
+				Upstreams: []Upstream{{
+					Name:      validUpstream.Name,
+					BaseURL:   validUpstream.BaseURL,
+					APIKeyEnv: "GATEWAY_TEST_API_KEY",
+					APIKey:    "sk-test-secret",
+				}},
+				Models: []Model{validModel},
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -267,6 +279,8 @@ func TestValidateHealthURL(t *testing.T) {
 }
 
 func TestLoad(t *testing.T) {
+	t.Setenv("GATEWAY_TEST_API_KEY", "sk-test-secret")
+
 	tests := []struct {
 		name       string
 		content    string
@@ -309,6 +323,48 @@ models:
     real_model: real-model-a
 `,
 			wantErr: `model "model-a" references unknown upstream "mock-unknown"`,
+		},
+		{
+			name: "API key env resolved into APIKey",
+			content: `upstreams:
+  - name: mock-a
+    base_url: http://localhost:8091
+    api_key_env: GATEWAY_TEST_API_KEY
+models:
+  - logic_model: model-a
+    upstream: mock-a
+    real_model: real-model-a
+`,
+			wantConfig: Config{
+				Upstreams: []Upstream{{
+					Name:      "mock-a",
+					BaseURL:   "http://localhost:8091",
+					APIKeyEnv: "GATEWAY_TEST_API_KEY",
+					APIKey:    "sk-test-secret",
+				}},
+				Models: []Model{{LogicModel: "model-a", Upstream: "mock-a", RealModel: "real-model-a"}},
+			},
+		},
+		{
+			// A missing credential must not fail startup; readiness reports it.
+			name: "unset API key env leaves APIKey empty without failing",
+			content: `upstreams:
+  - name: mock-a
+    base_url: http://localhost:8091
+    api_key_env: GATEWAY_TEST_MISSING_KEY
+models:
+  - logic_model: model-a
+    upstream: mock-a
+    real_model: real-model-a
+`,
+			wantConfig: Config{
+				Upstreams: []Upstream{{
+					Name:      "mock-a",
+					BaseURL:   "http://localhost:8091",
+					APIKeyEnv: "GATEWAY_TEST_MISSING_KEY",
+				}},
+				Models: []Model{{LogicModel: "model-a", Upstream: "mock-a", RealModel: "real-model-a"}},
+			},
 		},
 	}
 

@@ -65,7 +65,7 @@ func runGateway(config config.Config) error {
 	server := &http.Server{
 		Addr:         ":8080",
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second, // 网关给客户端写响应的超时时间，会在收到请求header时重置
+		WriteTimeout: 60 * time.Second, // 网关给客户端写响应的超时时间，会在收到请求header时重置
 		IdleTimeout:  30 * time.Second,
 	}
 	mux := http.NewServeMux()
@@ -94,7 +94,7 @@ loop:
 				reverseProxy, err := proxy.BuildReverseProxy(proxy.RoutePolicy{
 					UpstreamURL:   upstream.BaseURL,
 					UpstreamModel: model.RealModel,
-				}, sharedTransport)
+				}, sharedTransport, upstream.APIKey)
 				if err != nil {
 					log.Error("build reverse proxy failed", zap.Error(err))
 					return nil, err

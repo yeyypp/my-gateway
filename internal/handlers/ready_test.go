@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -60,6 +61,41 @@ func TestReadyCheckUsesConfiguredHealthURLs(t *testing.T) {
 				{Name: "unhealthy", HealthURL: unhealthy.URL + "/readyz"},
 			},
 			wantCode: http.StatusOK,
+		},
+		{
+			name: "upstream with an unset API key environment is not ready",
+			upstreams: []config.Upstream{
+				{Name: "deepseek", BaseURL: "https://api.deepseek.com", APIKeyEnv: "GATEWAY_TEST_MISSING_KEY"},
+			},
+			wantCode: http.StatusServiceUnavailable,
+		},
+		{
+			name: "upstream with resolved credentials and no probe is ready",
+			upstreams: []config.Upstream{
+				{
+					Name:      "deepseek",
+					BaseURL:   "https://api.deepseek.com",
+					APIKeyEnv: "GATEWAY_TEST_API_KEY",
+					APIKey:    "sk-test-secret",
+				},
+			},
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "healthy probed upstream outvotes a missing API key",
+			upstreams: []config.Upstream{
+				{Name: "deepseek", BaseURL: "https://api.deepseek.com", APIKeyEnv: "GATEWAY_TEST_MISSING_KEY"},
+				{Name: "healthy", HealthURL: healthy.URL + "/custom-health"},
+			},
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "missing API key does not rescue an unhealthy probe",
+			upstreams: []config.Upstream{
+				{Name: "deepseek", BaseURL: "https://api.deepseek.com", APIKeyEnv: "GATEWAY_TEST_MISSING_KEY"},
+				{Name: "unhealthy", HealthURL: unhealthy.URL + "/readyz"},
+			},
+			wantCode: http.StatusServiceUnavailable,
 		},
 	}
 
@@ -125,5 +161,31 @@ func TestReadyCheckHonorsCanceledContext(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestReadyCheckReportsMissingAPIKeyWithoutProbing(t *testing.T) {
+	var probes atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+
+	readyCheck := NewReadyCheck(nil)
+	err := readyCheck.checkIfUpstreamReady(context.Background(), config.Upstream{
+		Name:      "deepseek",
+		BaseURL:   "https://api.deepseek.com",
+		HealthURL: upstream.URL + "/readyz",
+		APIKeyEnv: "GATEWAY_TEST_MISSING_KEY",
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unset API key environment variable")
+	}
+	if !strings.Contains(err.Error(), "GATEWAY_TEST_MISSING_KEY") || !strings.Contains(err.Error(), "deepseek") {
+		t.Fatalf("expected the error to name the upstream and the env var, got %v", err)
+	}
+	if got := probes.Load(); got != 0 {
+		t.Fatalf("a missing API key must not probe the upstream, got %d probes", got)
 	}
 }

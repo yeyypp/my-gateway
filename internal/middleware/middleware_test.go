@@ -13,6 +13,51 @@ import (
 	"shuai/gateway/internal/protocol"
 )
 
+func TestValidateJSONRequestPublishesValidatedBody(t *testing.T) {
+	const body = `{"model":"model-a","messages":[{"role":"user","content":"test"}],"temperature":0.7}`
+
+	var published []byte
+	var publishedOK bool
+	var restored []byte
+	var restoredErr error
+	var routedModel string
+
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		published, publishedOK = GetRequestBodyFromCTX(r.Context())
+		if chatReq, ok := r.Context().Value(ChatReqKey).(protocol.ChatCompletionRequest); ok {
+			routedModel = chatReq.Model
+		}
+		restored, restoredErr = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+
+	ValidateJSONRequest(downstream).ServeHTTP(recorder, req)
+
+	result := recorder.Result()
+	defer result.Body.Close()
+	if result.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected status code %d, got %d", http.StatusNoContent, result.StatusCode)
+	}
+	if !publishedOK {
+		t.Fatal("expected the validated request body in the request context")
+	}
+	if string(published) != body {
+		t.Fatalf("expected published body %s, got %s", body, published)
+	}
+	if routedModel != "model-a" {
+		t.Fatalf("expected routed model %q in context, got %q", "model-a", routedModel)
+	}
+	if restoredErr != nil {
+		t.Fatalf("read restored body: %v", restoredErr)
+	}
+	if string(restored) != body {
+		t.Fatalf("expected restored r.Body %s, got %s", body, restored)
+	}
+}
+
 func TestGetGatewayRequestID(t *testing.T) {
 	const (
 		forgedGatewayID = "client-supplied-gateway-id"

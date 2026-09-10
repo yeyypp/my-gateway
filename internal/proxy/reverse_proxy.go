@@ -20,12 +20,17 @@ import (
 	"go.uber.org/zap"
 )
 
+type Proxy struct {
+	routePolicy RoutePolicy
+	proxy       *httputil.ReverseProxy
+}
+
 type RoutePolicy struct {
 	UpstreamURL   string
 	UpstreamModel string
 }
 
-func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http.Handler, error) {
+func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport, apiKey string) (http.Handler, error) {
 	if routePolicy.UpstreamURL == "" || routePolicy.UpstreamModel == "" || transport == nil {
 		return nil, errors.New("invalid policy or transport")
 	}
@@ -39,6 +44,9 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 			preq.SetURL(target)
 			preq.SetXForwarded()
 			preq.Out.Header.Del(protocol.HeaderClientRequestID)
+			if len(apiKey) != 0 {
+				preq.Out.Header.Set("Authorization", "Bearer "+apiKey)
+			}
 		},
 
 		Transport: transport,
@@ -111,37 +119,57 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport) (http
 		},
 	}
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		chatReq, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest)
-		if !ok {
-			log.Error("validated request missing from context", middleware.GetReqIDFromCTX(r.Context())...)
-			handlers.SendError(w, protocol.APIError{
-				Message: "missing chatReq",
-				Type:    protocol.ErrorTypeGateway,
-				Code:    protocol.ErrorCodeMissingRequiredParameter,
-			}, http.StatusBadGateway)
-			return
-		}
+	return &Proxy{
+		routePolicy: routePolicy,
+		proxy:       proxy,
+	}, nil
+}
 
-		chatReq.Model = routePolicy.UpstreamModel
-		content, err := json.Marshal(chatReq)
-		if err != nil {
-			fields := append(middleware.GetReqIDFromCTX(r.Context()), zap.Error(err))
-			log.Error("encode upstream request failed", fields...)
-			handlers.SendError(w, protocol.APIError{
-				Message: "encode upstream request failed",
-				Type:    protocol.ErrorTypeGateway,
-				Code:    protocol.ErrorCodeRequestEncodingFailed,
-			}, http.StatusInternalServerError)
-			return
-		}
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	rawBody, ok := middleware.GetRequestBodyFromCTX(r.Context())
+	if !ok {
+		log.Error("validated request body missing from context", middleware.GetReqIDFromCTX(r.Context())...)
+		handlers.SendError(w, protocol.APIError{
+			Message: "validated request body missing",
+			Type:    protocol.ErrorTypeGateway,
+			Code:    protocol.ErrorCodeRequestEncodingFailed,
+		}, http.StatusInternalServerError)
+		return
+	}
 
-		proxyReq := r.Clone(r.Context())
-		proxyReq.Body = io.NopCloser(bytes.NewReader(content))
-		proxyReq.ContentLength = int64(len(content))
-		proxy.ServeHTTP(w, proxyReq)
-	}), nil
+	upstreamBody, err := changeModel(rawBody, p.routePolicy.UpstreamModel)
+	if err != nil {
+		fields := append(middleware.GetReqIDFromCTX(r.Context()), zap.Error(err))
+		log.Error("rewrite upstream model failed", fields...)
+		handlers.SendError(w, protocol.APIError{
+			Message: "rewrite upstream model failed",
+			Type:    protocol.ErrorTypeGateway,
+			Code:    protocol.ErrorCodeRequestEncodingFailed,
+		}, http.StatusInternalServerError)
+		return
+	}
 
+	proxyReq := r.Clone(r.Context())
+	proxyReq.Body = io.NopCloser(bytes.NewReader(upstreamBody))
+	proxyReq.ContentLength = int64(len(upstreamBody))
+	p.proxy.ServeHTTP(w, proxyReq)
+}
+
+// changeModel replaces the top-level model field of an already validated Chat
+// Completions body and returns the bytes to forward. Every other field keeps the
+// bytes the client sent, so fields the Gateway does not model survive.
+func changeModel(rawBody []byte, realModel string) ([]byte, error) {
+	var partialReq map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &partialReq); err != nil {
+		return nil, err
+	}
+
+	encodedModel, err := json.Marshal(realModel)
+	if err != nil {
+		return nil, err
+	}
+	partialReq["model"] = encodedModel
+	return json.Marshal(partialReq)
 }
 
 func isSSEContentType(contentType string) bool {

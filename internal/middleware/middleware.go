@@ -20,9 +20,13 @@ type contextKey string
 
 const (
 	ChatReqKey         = contextKey("chatReqKey")
+	RequestBodyKey     = contextKey("requestBodyKey")
 	RequestIDKey       = contextKey("requestIDKey")
 	ClientRequestIDKey = contextKey("clientRequestIDKey")
 )
+
+// maxRequestBodyBytes bounds the request body the Gateway reads from a client.
+const maxRequestBodyBytes = 1 << 20
 
 type responseStatusWriter struct {
 	http.ResponseWriter
@@ -59,6 +63,14 @@ func GetReqIDFromCTX(ctx context.Context) []zap.Field {
 	return fields
 }
 
+// GetRequestBodyFromCTX returns the request body bytes that ValidateJSONRequest
+// read and validated. Later stages must rewrite these bytes instead of reading
+// r.Body again, so the dependency on the validation stage stays explicit.
+func GetRequestBodyFromCTX(ctx context.Context) ([]byte, bool) {
+	body, ok := ctx.Value(RequestBodyKey).([]byte)
+	return body, ok
+}
+
 func ValidateJSONRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method := r.Method
@@ -68,13 +80,13 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		}
 
 		// Limit the request body size to prevent abuse
-		limitedBody := http.MaxBytesReader(w, r.Body, 1024*1024) // Limit request body to 1MB
+		limitedBody := http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		defer limitedBody.Close()
 
 		content, err := io.ReadAll(limitedBody)
 		if err != nil {
 			if _, ok := err.(*http.MaxBytesError); ok {
-				log.Error("request body is larger than 1 MiB", GetReqIDFromCTX(r.Context())...)
+				log.Error("request body is larger than the Gateway limit", GetReqIDFromCTX(r.Context())...)
 				handlers.SendError(w, protocol.APIError{
 					Message: "request body too large",
 					Type:    protocol.ErrorTypeInvalidRequest,
@@ -92,7 +104,8 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 			return
 		}
 
-		// Replace the request body with a new ReadCloser containing the validated content
+		// Restore r.Body so the request stays a complete, readable HTTP request,
+		// and publish the validated bytes for the stages that rewrite it.
 		r.Body = io.NopCloser(bytes.NewReader(content))
 		r.ContentLength = int64(len(content))
 
@@ -121,6 +134,7 @@ func ValidateJSONRequest(next http.Handler) http.Handler {
 		}
 
 		ctx := context.WithValue(r.Context(), ChatReqKey, chatReq)
+		ctx = context.WithValue(ctx, RequestBodyKey, content)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

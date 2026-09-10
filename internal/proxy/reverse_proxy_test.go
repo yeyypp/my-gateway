@@ -21,7 +21,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// testChatBody is a valid Chat Completions request body that also carries
+// fields the gateway's minimal request struct does not model.
+const testChatBody = `{"model":"logic-model","messages":[{"role":"user","content":"test"}],"temperature":0.7,"tools":[{"type":"function"}],"response_format":{"type":"json_object"}}`
+
 func newTestProxy(t *testing.T, upstreamURL string) http.Handler {
+	return newTestProxyWithAPIKey(t, upstreamURL, "")
+}
+
+func newTestProxyWithAPIKey(t *testing.T, upstreamURL, apiKey string) http.Handler {
 	t.Helper()
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -30,22 +38,28 @@ func newTestProxy(t *testing.T, upstreamURL string) http.Handler {
 	proxy, err := BuildReverseProxy(
 		RoutePolicy{UpstreamURL: upstreamURL, UpstreamModel: "real-model"},
 		transport,
+		apiKey,
 	)
 	if err != nil {
 		t.Fatalf("failed to create proxy: %v", err)
 	}
+	// Reproduce the request state that ValidateJSONRequest leaves behind for the
+	// stages that route and rewrite the request.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := r.Context().Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest); !ok {
+		ctx := r.Context()
+		if _, ok := ctx.Value(middleware.ChatReqKey).(protocol.ChatCompletionRequest); !ok {
 			chatReq := protocol.ChatCompletionRequest{
 				Model: "logic-model",
 				Messages: []protocol.Message{
 					{Role: "user", Content: "test"},
 				},
 			}
-			ctx := context.WithValue(r.Context(), middleware.ChatReqKey, chatReq)
-			r = r.WithContext(ctx)
+			ctx = context.WithValue(ctx, middleware.ChatReqKey, chatReq)
 		}
-		proxy.ServeHTTP(w, r)
+		if _, ok := middleware.GetRequestBodyFromCTX(ctx); !ok {
+			ctx = context.WithValue(ctx, middleware.RequestBodyKey, []byte(testChatBody))
+		}
+		proxy.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -80,7 +94,7 @@ func TestPropagateStatusCode(t *testing.T) {
 			gateway := httptest.NewServer(proxy)
 			defer gateway.Close()
 
-			resp, err := http.Post(gateway.URL, "application/json", nil)
+			resp, err := http.Post(gateway.URL, "application/json", strings.NewReader(testChatBody))
 			if err != nil {
 				t.Fatalf("failed to send request to gateway: %v", err)
 			}
@@ -88,6 +102,212 @@ func TestPropagateStatusCode(t *testing.T) {
 
 			if resp.StatusCode != tc.expectCode {
 				t.Errorf("expected status code %d, got %d", tc.expectCode, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestProxyPreservesUnmodeledRequestFields(t *testing.T) {
+	received := make(chan map[string]json.RawMessage, 1)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			received <- nil
+			return
+		}
+		received <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	gateway := httptest.NewServer(newTestProxy(t, upstream.URL))
+	defer gateway.Close()
+
+	resp, err := http.Post(gateway.URL, "application/json", strings.NewReader(testChatBody))
+	if err != nil {
+		t.Fatalf("failed to send request to gateway: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+
+	body := <-received
+	if body == nil {
+		t.Fatal("upstream did not receive a decodable JSON body")
+	}
+
+	// The gateway owns the model field only, so every other field must survive
+	// the rewrite verbatim.
+	want := map[string]string{
+		"model":           `"real-model"`,
+		"messages":        `[{"role":"user","content":"test"}]`,
+		"temperature":     `0.7`,
+		"tools":           `[{"type":"function"}]`,
+		"response_format": `{"type":"json_object"}`,
+	}
+	for field, wantRaw := range want {
+		got, ok := body[field]
+		if !ok {
+			t.Errorf("upstream request lost field %q", field)
+			continue
+		}
+		if string(got) != wantRaw {
+			t.Errorf("field %q: expected %s, got %s", field, wantRaw, got)
+		}
+	}
+	if len(body) != len(want) {
+		t.Errorf("expected %d fields upstream, got %d: %v", len(want), len(body), body)
+	}
+}
+
+func TestChangeModelRewritesOnlyTheTopLevelModel(t *testing.T) {
+	testCases := []struct {
+		name      string
+		body      string
+		realModel string
+		want      string
+		wantErr   bool
+	}{
+		{
+			name:      "unmodeled fields survive",
+			body:      `{"model":"logic-model","messages":[{"role":"user","content":"test"}],"temperature":0.7,"tools":[{"type":"function"}]}`,
+			realModel: "real-model",
+			want:      `{"messages":[{"role":"user","content":"test"}],"model":"real-model","temperature":0.7,"tools":[{"type":"function"}]}`,
+		},
+		{
+			name:      "nested model fields stay untouched",
+			body:      `{"model":"logic-model","messages":[{"role":"user","content":"test"}],"metadata":{"model":"keep-me"}}`,
+			realModel: "real-model",
+			want:      `{"messages":[{"role":"user","content":"test"}],"metadata":{"model":"keep-me"},"model":"real-model"}`,
+		},
+		{
+			name:      "invalid json is rejected",
+			body:      `{"model":`,
+			realModel: "real-model",
+			wantErr:   true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := changeModel([]byte(tc.body), tc.realModel)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got body %s", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("changeModel: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("expected body %s, got %s", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestProxyRejectsRequestWithoutValidatedBody(t *testing.T) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	t.Cleanup(transport.CloseIdleConnections)
+
+	proxy, err := BuildReverseProxy(
+		RoutePolicy{UpstreamURL: "http://127.0.0.1:1", UpstreamModel: "real-model"},
+		transport,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("failed to create proxy: %v", err)
+	}
+
+	// A request that never passed through ValidateJSONRequest has no validated
+	// body, so the Gateway must fail loudly instead of guessing at r.Body.
+	ctx := context.WithValue(context.Background(), middleware.ChatReqKey, protocol.ChatCompletionRequest{
+		Model: "logic-model",
+	})
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(testChatBody))
+	recorder := httptest.NewRecorder()
+
+	proxy.ServeHTTP(recorder, req)
+
+	result := recorder.Result()
+	defer result.Body.Close()
+	if result.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected status code %d, got %d", http.StatusInternalServerError, result.StatusCode)
+	}
+
+	var respJSON protocol.ErrorResponse
+	if err := json.NewDecoder(result.Body).Decode(&respJSON); err != nil {
+		t.Fatalf("failed to decode response body: %v", err)
+	}
+	if respJSON.Error.Type != protocol.ErrorTypeGateway {
+		t.Fatalf("expected error type %q, got %q", protocol.ErrorTypeGateway, respJSON.Error.Type)
+	}
+	if respJSON.Error.Code != protocol.ErrorCodeRequestEncodingFailed {
+		t.Fatalf("expected error code %q, got %q", protocol.ErrorCodeRequestEncodingFailed, respJSON.Error.Code)
+	}
+}
+
+func TestUpstreamAuthorizationInjection(t *testing.T) {
+	testCases := []struct {
+		name              string
+		apiKey            string
+		clientAuth        string
+		wantAuthorization string
+	}{
+		{
+			name:              "configured API key replaces the client credential",
+			apiKey:            "sk-gateway-upstream",
+			clientAuth:        "Bearer sk-client",
+			wantAuthorization: "Bearer sk-gateway-upstream",
+		},
+		{
+			name:              "upstream without API key keeps the client credential",
+			clientAuth:        "Bearer sk-client",
+			wantAuthorization: "Bearer sk-client",
+		},
+		{
+			name:              "no credentials at all",
+			wantAuthorization: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			received := make(chan string, 1)
+
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				received <- r.Header.Get("Authorization")
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+
+			proxy := newTestProxyWithAPIKey(t, upstream.URL, tc.apiKey)
+			gateway := httptest.NewServer(proxy)
+			defer gateway.Close()
+
+			req, err := http.NewRequest(http.MethodPost, gateway.URL, strings.NewReader(testChatBody))
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if tc.clientAuth != "" {
+				req.Header.Set("Authorization", tc.clientAuth)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("failed to send request to gateway: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+			}
+
+			if got := <-received; got != tc.wantAuthorization {
+				t.Fatalf("expected upstream Authorization %q, got %q", tc.wantAuthorization, got)
 			}
 		})
 	}
@@ -105,7 +325,7 @@ func TestUpstreamUnavailable(t *testing.T) {
 	gateway := httptest.NewServer(proxy)
 	defer gateway.Close()
 
-	resp, err := http.Post(gateway.URL, "application/json", nil)
+	resp, err := http.Post(gateway.URL, "application/json", strings.NewReader(testChatBody))
 	if err != nil {
 		t.Fatalf("failed to send request to gateway: %v", err)
 	}
@@ -397,7 +617,7 @@ func TestClientCancel(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequestWithContext(ctx, "POST", "http://test", nil)
+	req := httptest.NewRequestWithContext(ctx, "POST", "http://test", strings.NewReader(testChatBody))
 	recorder := httptest.NewRecorder()
 	handler := middleware.RequestTimeout(5 * time.Second)(proxy)
 

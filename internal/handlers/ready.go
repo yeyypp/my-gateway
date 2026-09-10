@@ -19,10 +19,13 @@ type ReadyCheck struct {
 }
 
 func NewReadyCheck(upstreams []config.Upstream) *ReadyCheck {
-	probedUpstreams := make([]config.Upstream, 0, len(upstreams))
+	// An upstream takes part in the readiness decision when it can be probed or
+	// when it carries credentials that may be missing. Upstreams with neither a
+	// health URL nor an API key environment stay ignored, as before.
+	checkedUpstreams := make([]config.Upstream, 0, len(upstreams))
 	for _, upstream := range upstreams {
-		if upstream.HealthURL != "" {
-			probedUpstreams = append(probedUpstreams, upstream)
+		if upstream.HealthURL != "" || upstream.APIKeyEnv != "" {
+			checkedUpstreams = append(checkedUpstreams, upstream)
 		}
 	}
 
@@ -34,7 +37,7 @@ func NewReadyCheck(upstreams []config.Upstream) *ReadyCheck {
 		},
 	}
 	return &ReadyCheck{
-		upstreams: probedUpstreams,
+		upstreams: checkedUpstreams,
 		client:    client,
 	}
 }
@@ -79,6 +82,13 @@ func (rc *ReadyCheck) CheckUpstreams(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rc *ReadyCheck) checkIfUpstreamReady(ctx context.Context, upstream config.Upstream) error {
+	if upstream.APIKeyEnv != "" && upstream.APIKey == "" {
+		return fmt.Errorf("upstream %q: API key env %q is not set", upstream.Name, upstream.APIKeyEnv)
+	}
+	if upstream.HealthURL == "" {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 

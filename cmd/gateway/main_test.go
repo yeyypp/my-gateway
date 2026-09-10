@@ -227,17 +227,16 @@ func TestConfigToRouter(t *testing.T) {
 				t.Fatalf("build router: %v", err)
 			}
 
-			chatReq := protocol.ChatCompletionRequest{
-				Model: "model-a",
-				Messages: []protocol.Message{
-					{Role: "user", Content: "test"},
-				},
-			}
-			ctx := context.WithValue(context.Background(), middleware.ChatReqKey, chatReq)
-			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", nil)
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/v1/chat/completions",
+				strings.NewReader(`{"model":"model-a","messages":[{"role":"user","content":"test"}]}`),
+			)
 			recorder := httptest.NewRecorder()
 
-			modelRouter.ServeHTTP(recorder, req)
+			// Run the real ingress chain so routing and the model rewrite see the
+			// same validated request the Gateway produces.
+			middleware.ValidateJSONRequest(modelRouter).ServeHTTP(recorder, req)
 
 			result := recorder.Result()
 			defer result.Body.Close()
