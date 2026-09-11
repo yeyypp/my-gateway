@@ -1,317 +1,145 @@
-# My Gateway
+# AI Gateway
 
-Current roadmap: [AI Gateway project plan](docs/AI_GATEWAY_PLAN.md).
+**中文** | [English](README.en.md)
 
-A small Go AI Gateway that exposes a minimal Chat Completions-style endpoint, routes logical models to configured upstreams, and rewrites them to provider-specific model names. The Study Assistant is a reference client: it knows only the Gateway address and a logical model name.
+路线图：[docs/AI_GATEWAY_PLAN.md](docs/AI_GATEWAY_PLAN.md)
 
-## Current architecture
-
-```text
-Study Assistant or HTTP client
-  → POST :8080/v1/chat/completions
-  → Gateway request ID, validation, timeout, and request logging
-  → ModelRouter
-      ├── model-a → mock-a / model-a
-      ├── model-b → mock-b / model-b
-      ├── local   → ollama / gemma4:e2b-mlx
-      └── flash / pro → deepseek / deepseek-v4-*
-  → model rewrite and reverse proxy
-  → upstream response and correlated logs
-```
-
-The Gateway loads model routes, upstream addresses, optional health URLs, and optional upstream credential environment names from configuration before it starts listening. Clients do not need the selected upstream address or its real model name.
-
-## Project layout
+一个精简的 Go AI 网关：提供最小化的 Chat Completions 接口，把逻辑模型路由到上游，并改写为上游实际使用的模型名。客户端只需知道网关地址和一个逻辑模型名。
 
 ```text
-cmd/
-  gateway/           Gateway process and dependency wiring
-  mock-upstream/     Parameterized Chat Completions mock
-  study-assistant/   Reference CLI that reads a file and calls the Gateway
-configs/             Gateway model and upstream configuration
-internal/
-  config/            Configuration loading and validation
-  handlers/          JSON responses, readiness, and mock API handler
-  middleware/        Request ID, logging, validation, and timeout
-  proxy/             Model rewrite, reverse proxy, and failure handling
-  router/            Logical model selection
-scripts/             Local development helpers
-docs/                Plans, request flow, and learning notes
+客户端 → POST :8080/v1/chat/completions → 网关（请求 ID / 校验 / 超时 / 日志）
+  → ModelRouter：model-a→mock-a，model-b→mock-b，local→ollama，flash/pro→deepseek
+  → 模型改写 + 反向代理 → 上游
 ```
 
-## Run locally
+## 快速开始
 
-The project requires Go 1.26.1 or a compatible Go toolchain. The tmux-based development environment also requires `tmux`.
-
-Start Gateway, Mock A, and Mock B in one tmux session:
+需要 Go 1.26.1；tmux 流程还需 `tmux`。
 
 ```sh
-make dev
+make dev     # 在 tmux 中启动 Gateway、Mock A、Mock B
+make kill    # 停止会话
+# 或分别运行：make run-mock-a / make run-mock-b / make run-gateway
 ```
 
-The session keeps the three service logs in separate panes and opens a fourth pane for commands. Stop the whole session with:
-
-```sh
-make kill
-```
-
-To start the services without tmux, use three terminals:
-
-```sh
-make run-mock-a
-make run-mock-b
-make run-gateway
-```
-
-The services listen on these addresses:
-
-| Process | Address | Purpose |
+| 进程 | 地址 | 用途 |
 |---|---|---|
-| Gateway | `http://localhost:8080` | Client API, liveness, and readiness |
-| Mock A | `http://localhost:8091` | `model-a` upstream and readiness |
-| Mock B | `http://localhost:8092` | `model-b` upstream and readiness |
+| Gateway | `http://localhost:8080` | 客户端接口、存活、就绪 |
+| Mock A | `http://localhost:8091` | `model-a` 上游 |
+| Mock B | `http://localhost:8092` | `model-b` 上游 |
 
-`make run-gateway` uses `configs/default_config.yaml`. To select another configuration explicitly:
+默认读取 `configs/default_config.yaml`，可用 `go run ./cmd/gateway start --config <file>` 指定。启动前校验完整配置：URL 非法、重名、字段缺失或引用未知上游会启动失败；上游凭证缺失不阻塞，由就绪探针报告。
 
-```sh
-go run ./cmd/gateway start --config path/to/config.yaml
-```
+## 接口
 
-The Gateway validates the complete configuration before listening. Invalid URLs, duplicate names, missing fields, and model references to unknown upstreams cause startup to fail. A missing upstream credential does not stop startup; readiness reports it instead.
-
-## Minimal protocol
-
-The Gateway currently accepts `POST /v1/chat/completions` with this minimal request shape:
+`POST /v1/chat/completions` 的最小请求：
 
 ```json
-{
-  "model": "model-a",
-  "messages": [
-    {"role": "user", "content": "test"}
-  ],
-  "stream": false
-}
+{"model":"model-a","messages":[{"role":"user","content":"test"}],"stream":false}
 ```
 
-`model` is a client-facing logical model. `messages` must not be empty, and only text `role` and `content` fields are supported. `stream` may be `false` for a JSON response or `true` for an upstream that supports OpenAI-compatible SSE. The Gateway preserves the logical routing decision, rewrites the model name, and forwards the upstream response without inventing a private streaming protocol. Only the top-level `model` field is rewritten; every other field is forwarded with the JSON value the client sent.
+`model` 是逻辑模型；`messages` 不能为空，且只支持文本 `role`/`content`；`stream=true` 要求上游支持 OpenAI 兼容 SSE。网关只改写顶层 `model` 字段，其余字段按客户端发送的 JSON 原样转发。
 
-Successful responses use a minimal Chat Completions-style object. Gateway-generated errors use a stable envelope:
+成功返回最小化的 Chat Completions 对象；网关自身产生的错误统一使用如下信封：
 
 ```json
-{
-  "error": {
-    "message": "...",
-    "type": "...",
-    "param": "...",
-    "code": "..."
-  }
-}
+{"error":{"message":"...","type":"...","param":"...","code":"..."}}
 ```
 
-Invalid JSON, unsupported values, and unknown models return 400; an oversized request body returns 413; an unreachable upstream returns 502; and a Gateway or network timeout returns 504. If an upstream returns an explicit HTTP response, its status and body pass through the Gateway. Gateway-generated errors use the envelope above, while an upstream error keeps the provider's own shape, so the two sources do not share one error vocabulary.
+无效 JSON、取值不支持或模型未知返回 400；请求体过大返回 413；上游不可达返回 502；网关或网络超时返回 504。上游若返回明确的 HTTP 响应，状态码与响应体原样透传。
 
-## Configure routing
+## 路由配置
 
-Each route combines three identities:
-
-- `logic_model`: the stable name accepted from clients;
-- `upstream`: the configured service that receives the request;
-- `real_model`: the model name understood by that service.
-
-The default configuration includes two mocks, an Ollama service reachable from an OrbStack Linux VM, and a DeepSeek upstream:
+每条路由由三个身份组成：`logic_model`（客户端使用的名称）、`upstream`（接收请求的服务）、`real_model`（该服务认识的模型名）。默认配置含 Mock A/B、Ollama 与 DeepSeek：
 
 ```yaml
 upstreams:
-  - name: mock-a
-    base_url: http://localhost:8091
-    health_url: http://localhost:8091/readyz
-  - name: mock-b
-    base_url: http://localhost:8092
-    health_url: http://localhost:8092/readyz
-  - name: ollama
-    base_url: http://host.orb.internal:11434
-  - name: deepseek
-    base_url: https://api.deepseek.com
-    api_key_env: DEEPSEEK_API_KEY
-
+  - {name: mock-a,   base_url: http://localhost:8091, health_url: http://localhost:8091/readyz}
+  - {name: mock-b,   base_url: http://localhost:8092, health_url: http://localhost:8092/readyz}
+  - {name: ollama,   base_url: http://host.orb.internal:11434}
+  - {name: deepseek, base_url: https://api.deepseek.com, api_key_env: DEEPSEEK_API_KEY}
 models:
-  - logic_model: model-a
-    upstream: mock-a
-    real_model: model-a
-  - logic_model: model-b
-    upstream: mock-b
-    real_model: model-b
-  - logic_model: local
-    upstream: ollama
-    real_model: gemma4:e2b-mlx
-  - logic_model: flash
-    upstream: deepseek
-    real_model: deepseek-v4-flash
-  - logic_model: pro
-    upstream: deepseek
-    real_model: deepseek-v4-pro
+  - {logic_model: model-a, upstream: mock-a,  real_model: model-a}
+  - {logic_model: model-b, upstream: mock-b,  real_model: model-b}
+  - {logic_model: local,   upstream: ollama,  real_model: gemma4:e2b-mlx}
+  - {logic_model: flash,   upstream: deepseek, real_model: deepseek-v4-flash}
+  - {logic_model: pro,     upstream: deepseek, real_model: deepseek-v4-pro}
 ```
 
-`api_key_env` names the environment variable that holds the credential the Gateway sends to that upstream; the secret itself is never written to the config file. A missing or unset variable does not stop the Gateway, and readiness reports that upstream as unavailable.
+`api_key_env` 指定存放上游凭证的环境变量名（密钥不写入配置文件）；变量未设置不阻塞启动，但该上游会被就绪探针标记为不可用。
 
-To route the client-visible `model-a` to Mock B, change its target and restart the Gateway:
+改路由后需重启网关。例如把 `model-a` 指向 Mock B：
 
 ```yaml
 models:
-  - logic_model: model-a
-    upstream: mock-b
-    real_model: model-b
+  - {logic_model: model-a, upstream: mock-b, real_model: model-b}
 ```
 
-The client still requests `model-a`. Before forwarding, the Gateway rewrites the request body to use `model-b`, which is the name understood by Mock B.
+客户端仍请求 `model-a`，转发前被改写为 Mock B 认识的 `model-b`。
 
-## Send requests
-
-Use the Study Assistant to send a file through the Gateway to Mock A:
+## 发送请求
 
 ```sh
+# 参考 CLI（首行输出网关请求 ID）
 go run ./cmd/study-assistant analyze test-data/test.txt --model model-a
-```
 
-The first output line contains the Gateway request ID, followed by the mock response:
-
-```text
-X-Gateway-Request-ID:<generated-id>
-response from mock-a
-```
-
-The equivalent direct request is:
-
-```sh
+# 等价的原生请求
 curl -i http://localhost:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"model-a","messages":[{"role":"user","content":"test"}]}'
 ```
 
-Change the logical model to `model-b` to route to Mock B. Unknown models return HTTP 400 with the common error envelope.
+把模型换成 `model-b` 即路由到 Mock B；未知模型返回 400 和统一错误信封。
 
-## Correlate a request across components
+## 请求关联
 
-Three request IDs have different owners and must remain distinct:
-
-| Header or log field | Owner | Behavior |
+| 头 / 字段 | 归属 | 行为 |
 |---|---|---|
-| `X-Client-Request-ID` / `client_request_id` | Client | Optional caller ID. The Gateway logs it but does not forward it to the upstream. |
-| `X-Gateway-Request-ID` / `gateway_request_id` | Gateway | Generated by the Gateway, returned to the client, forwarded to the upstream, and used to join Gateway and Mock logs. A client or upstream cannot replace it. |
-| `X-Request-ID` / `upstream_request_id` | Upstream provider | Generated by the Mock or provider, returned independently, and recorded by the Gateway without replacing its own ID. |
+| `X-Client-Request-ID` | 客户端 | 可选，网关仅记录，不转发上游 |
+| `X-Gateway-Request-ID` | 网关 | 生成后返回客户端、转发上游，用于关联网关与 Mock 日志，不可被替换 |
+| `X-Request-ID` | 上游 | 上游独立生成并返回，网关记录但不覆盖自身 ID |
 
-After a Study Assistant request, copy the printed `X-Gateway-Request-ID` and find it in:
+`X-Gateway-Request-ID` 出现在网关的 `upstream response received`、`gateway request completed` 日志和所选 Mock 的 `mock request completed` 日志中，可据此把一次请求从 CLI 追到上游。日志不记录完整 Authorization、文件内容和原始请求体。
 
-- the Gateway's `upstream response received` log;
-- the Gateway's `gateway request completed` log;
-- the selected Mock's `mock request completed` log.
+## 健康与就绪
 
-The Gateway upstream-response log and Mock completion log also contain the same `upstream_request_id`. This proves that one request can be followed from the CLI through the Gateway to the selected upstream while the Gateway and provider identities remain separate.
-
-To observe an optional client-owned ID in Gateway logs, send a direct request with one:
-
-```sh
-curl -i http://localhost:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -H 'X-Client-Request-ID: demo-client-001' \
-  -d '{"model":"model-a","messages":[{"role":"user","content":"test"}]}'
-```
-
-Logs intentionally omit complete Authorization values, file contents, and raw Chat Completions request bodies.
-
-## Health and readiness
-
-| Endpoint | Meaning |
+| 端点 | 含义 |
 |---|---|
-| Gateway `GET /healthz` | The Gateway process is alive. It does not call an upstream. |
-| Gateway `GET /readyz` | At least one participating upstream is usable. Upstreams with a `health_url` are probed; upstreams that declare `api_key_env` take part as well and count as unavailable while that variable is unset. If no upstream participates, readiness succeeds. |
-| Mock `GET /readyz` | That Mock process is ready to receive requests. |
-
-Check the Gateway endpoints with:
+| Gateway `GET /healthz` | 进程存活，不调用上游 |
+| Gateway `GET /readyz` | 至少一个参与的上游可用：有 `health_url` 的被探测，声明了 `api_key_env` 的按凭证状态计入 |
+| Mock `GET /readyz` | 该 Mock 可接收请求 |
 
 ```sh
 curl -i http://localhost:8080/healthz
 curl -i http://localhost:8080/readyz
 ```
 
-With the default configuration, both mocks participate in readiness and Ollama does not. The observable failure and recovery behavior is:
+就绪每次基于实时探测重新计算，失败的业务请求不会永久改变它。
 
-1. With both mocks running, `/readyz` returns 200.
-2. Stop either mock; `/readyz` remains 200 because the other probed upstream is still available.
-3. Stop both mocks; `/readyz` returns 503 while `/healthz` remains 200.
-4. Restart either mock; `/readyz` returns 200 again without restarting the Gateway.
+## Ollama 与流式
 
-A failed business request, such as an unknown logical model, does not permanently change either health result. Readiness is recalculated from fresh upstream probes on every request.
-
-## Try the local Ollama route
-
-The default `local` route assumes Ollama is running on the macOS host and the Gateway is running inside an OrbStack Linux VM. Start or load the configured model on macOS:
+默认 `local` 路由假设 Ollama 运行在 macOS 主机、网关运行在 OrbStack Linux VM。先在主机 `ollama run gemma4:e2b-mlx`，再：
 
 ```sh
-ollama run gemma4:e2b-mlx
+go run ./cmd/study-assistant analyze test-data/test.txt --model local            # 非流式
+go run ./cmd/study-assistant analyze test-data/test.txt --model local --stream   # SSE：请求 ID、模型、TTFT 与增量内容
 ```
 
-Then send the logical model `local`:
+`curl -N` 可查看原始 SSE：兼容上游返回 `Content-Type: text/event-stream`、若干最小 Chat Completions 分块，并以 `data: [DONE]` 结束。其他环境请把 Ollama `base_url` 改为网关可达地址；它没有 `health_url`，不影响网关就绪。
+
+## 当前限制
+
+- 只读取 `model`、文本 `messages` 和 `stream`，其他字段原样转发。
+- 流式依赖所选上游返回 OpenAI 兼容 SSE。
+- 改写 `model` 会重新序列化请求体：字段值不变，键顺序、空白与 HTML 转义可能变化。
+- 非流式受整体超时与服务端写超时约束；流式绕过整体超时并清除写超时。取消、背压、上游中断均有专门测试；流式指标与结束原因分类仍待办，见[路线图](docs/AI_GATEWAY_PLAN.md)。
+- 配置在启动时加载，改路由需重启。
+- 就绪对所有参与上游采用「任一健康」策略，不保证按模型可用。
+
+## 验证
 
 ```sh
-go run ./cmd/study-assistant analyze test-data/test.txt --model local
+go test -count=1 ./... && go test -race ./... && go vet ./... && go build ./... && git diff --check
 ```
 
-The Gateway routes the request to Ollama and rewrites `local` to `gemma4:e2b-mlx`. On environments other than OrbStack, change the Ollama `base_url` to an address reachable from the Gateway. Ollama has no `health_url` in the default configuration, so it does not affect Gateway readiness.
-
-### Stream through Ollama
-
-Add `--stream` to make the Study Assistant request an SSE response:
-
-```sh
-go run ./cmd/study-assistant analyze test-data/test.txt --model local --stream
-```
-
-The CLI prints the Gateway request ID and logical model, reports client-observed time to the first non-empty content chunk, and writes each `choices[].delta.content` value as it arrives:
-
-```text
-X-Gateway-Request-ID:<generated-id>
-Model:local
-TTFT:<milliseconds>ms
-<answer printed incrementally>
-```
-
-To inspect the raw SSE stream instead, use `curl -N` so curl does not buffer its output:
-
-```sh
-curl -N -i http://localhost:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"local","messages":[{"role":"user","content":"explain Go context cancellation"}],"stream":true}'
-```
-
-A compatible upstream returns `Content-Type: text/event-stream`, one or more minimal Chat Completions chunks, and a final marker:
-
-```text
-data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"..."}}]}
-
-data: [DONE]
-
-```
-
-The standalone Mock A/B processes remain non-streaming fixtures. The deterministic streaming test uses a test-local upstream, while the `local` route provides the real Ollama demonstration.
-
-## Current protocol limits
-
-- Only the minimal Chat Completions request fields `model`, text `messages`, and `stream` are read by the Gateway. Other JSON fields are forwarded untouched.
-- Streaming currently relies on the selected upstream returning OpenAI-compatible `text/event-stream` chunks ending in `data: [DONE]`.
-- Rewriting `model` re-serializes the request body, so provider-specific fields keep their JSON values while key order, whitespace, and HTML-escaped characters can change.
-- Non-streaming requests retain the overall timeout and server write deadline; validated streaming requests bypass that overall timeout and clear the write deadline. Cancellation, backpressure, and upstream interruption have dedicated tests; Gateway streaming metrics and end-reason classification remain planned work in the [current roadmap](docs/AI_GATEWAY_PLAN.md).
-- Configuration is loaded at startup; changing a route requires restarting the Gateway.
-- Readiness uses an any-healthy policy across upstreams that have a configured health URL or a declared `api_key_env`; it is not a per-model availability guarantee, and an upstream without a health URL is only reported by its credentials, not by a probe.
-
-## Verify
-
-`TestGatewaySendFirstChunkBeforeSecondChunk` uses a test-local SSE upstream that flushes its first chunk and then pauses before continuing. The client must receive that chunk through the complete Middleware, Router, and ReverseProxy chain before the test releases the upstream. This gives deterministic evidence that the Gateway does not wait for the whole response before forwarding the first chunk.
-
-```sh
-go test -count=1 ./...
-go test -race ./...
-go vet ./...
-go build ./...
-git diff --check
-```
+`TestGatewaySendFirstChunkBeforeSecondChunk` 用测试内置 SSE 上游证明：网关不会等整段响应结束才转发首块。
