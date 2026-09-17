@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"shuai/gateway/internal/handlers"
 	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/protocol"
+	"shuai/gateway/internal/ratelimit"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -19,11 +23,14 @@ import (
 type contextKey string
 
 const (
-	ChatReqKey         = contextKey("chatReqKey")
-	RequestBodyKey     = contextKey("requestBodyKey")
-	RequestIDKey       = contextKey("requestIDKey")
-	ClientRequestIDKey = contextKey("clientRequestIDKey")
+	ChatReqKey      = contextKey("chatReqKey")
+	RequestBodyKey  = contextKey("requestBodyKey")
+	GatewayReqIDKey = contextKey("gatewayReqIDKey")
+	ClientReqIDKey  = contextKey("clientReqIDKey")
+	ClientID        = contextKey("clientID")
 )
+
+type Middleware func(http.Handler) http.Handler
 
 // maxRequestBodyBytes bounds the request body the Gateway reads from a client.
 const maxRequestBodyBytes = 1 << 20
@@ -50,25 +57,6 @@ func (w *responseStatusWriter) Write(content []byte) (int, error) {
 
 func (w *responseStatusWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
-}
-
-func GetReqIDFromCTX(ctx context.Context) []zap.Field {
-	fields := make([]zap.Field, 0, 2)
-	if requestID, ok := ctx.Value(RequestIDKey).(string); ok && requestID != "" {
-		fields = append(fields, zap.String("gateway_request_id", requestID))
-	}
-	if clientRequestID, ok := ctx.Value(ClientRequestIDKey).(string); ok && clientRequestID != "" {
-		fields = append(fields, zap.String("client_request_id", clientRequestID))
-	}
-	return fields
-}
-
-// GetRequestBodyFromCTX returns the request body bytes that ValidateJSONRequest
-// read and validated. Later stages must rewrite these bytes instead of reading
-// r.Body again, so the dependency on the validation stage stays explicit.
-func GetRequestBodyFromCTX(ctx context.Context) ([]byte, bool) {
-	body, ok := ctx.Value(RequestBodyKey).([]byte)
-	return body, ok
 }
 
 func ValidateJSONRequest(next http.Handler) http.Handler {
@@ -161,14 +149,14 @@ func RequestTimeout(timeout time.Duration) func(http.Handler) http.Handler {
 	}
 }
 
-func GetGatewayRequestID(next http.Handler) http.Handler {
+func SetGatewayRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := uuid.New().String()
 		r.Header.Set(protocol.HeaderGatewayRequestID, requestID)
 		w.Header().Set(protocol.HeaderGatewayRequestID, requestID)
-		ctx := context.WithValue(r.Context(), RequestIDKey, requestID)
+		ctx := context.WithValue(r.Context(), GatewayReqIDKey, requestID)
 		if clientRequestID := r.Header.Get(protocol.HeaderClientRequestID); clientRequestID != "" {
-			ctx = context.WithValue(ctx, ClientRequestIDKey, clientRequestID)
+			ctx = context.WithValue(ctx, ClientReqIDKey, clientRequestID)
 		}
 
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -194,4 +182,100 @@ func LogRequest(next http.Handler) http.Handler {
 		)
 		log.Info("gateway request completed", fields...)
 	})
+}
+
+func Authorization(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bear := r.Header.Get("Authorization")
+		if len(bear) == 0 || !strings.HasPrefix(bear, "Bearer ") {
+			handlers.SendError(w, protocol.APIError{}, http.StatusUnauthorized)
+			return
+		}
+
+		clientKey := strings.TrimPrefix(bear, "Bearer ")
+
+		var clientID string
+		if v := os.Getenv("LOCAL_CLIENT_KEY_A"); v != "" && v == clientKey {
+			clientID = "client-A"
+		} else if v := os.Getenv("LOCAL_CLIENT_KEY_B"); v != "" && v == clientKey {
+			clientID = "client-B"
+		}
+		if len(clientID) == 0 {
+			handlers.SendError(w, protocol.APIError{}, http.StatusUnauthorized)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), ClientID, clientID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func RateLimit(next http.Handler) http.Handler {
+	return rateLimitWithFactory(func() ratelimit.Limiter {
+		return ratelimit.NewTokenBucket(1, 10)
+	})(next)
+}
+
+func rateLimitWithFactory(newLimiter func() ratelimit.Limiter) Middleware {
+	var limiterMap sync.Map
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			clientID := GetClientIDFromCTX(r.Context())
+			if len(clientID) == 0 {
+				handlers.SendError(w, protocol.APIError{}, http.StatusForbidden)
+				return
+			}
+
+			v, ok := limiterMap.Load(clientID)
+			if !ok {
+				v, _ = limiterMap.LoadOrStore(clientID, newLimiter())
+			}
+			limiter := v.(ratelimit.Limiter)
+			if allowed := limiter.Allow(1); !allowed {
+				handlers.SendError(w, protocol.APIError{
+					Message: "rate limit",
+					Type:    protocol.ErrorTypeGateway,
+					Code:    protocol.ErrorCodeRateLimit,
+				}, http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func GetClientIDFromCTX(ctx context.Context) string {
+	clientID, ok := ctx.Value(ClientID).(string)
+	if !ok {
+		return ""
+	}
+	return clientID
+}
+
+func GetReqIDFromCTX(ctx context.Context) []zap.Field {
+	fields := make([]zap.Field, 0, 2)
+	if requestID, ok := ctx.Value(GatewayReqIDKey).(string); ok && requestID != "" {
+		fields = append(fields, zap.String("gateway_request_id", requestID))
+	}
+	if clientRequestID, ok := ctx.Value(ClientReqIDKey).(string); ok && clientRequestID != "" {
+		fields = append(fields, zap.String("client_request_id", clientRequestID))
+	}
+	return fields
+}
+
+// GetRequestBodyFromCTX returns the request body bytes that ValidateJSONRequest
+// read and validated. Later stages must rewrite these bytes instead of reading
+// r.Body again, so the dependency on the validation stage stays explicit.
+func GetRequestBodyFromCTX(ctx context.Context) ([]byte, bool) {
+	body, ok := ctx.Value(RequestBodyKey).([]byte)
+	return body, ok
+}
+
+func Chain(middleware ...Middleware) Middleware {
+	return func(h http.Handler) http.Handler {
+		for i := len(middleware) - 1; i >= 0; i-- {
+			h = middleware[i](h)
+		}
+		return h
+	}
 }

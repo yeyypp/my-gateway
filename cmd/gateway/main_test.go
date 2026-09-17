@@ -44,7 +44,7 @@ func newStreamingGatewayHandler(t *testing.T, upstreamURL string, requestTimeout
 		t.Fatalf("build Gateway router: %v", err)
 	}
 
-	return middleware.GetGatewayRequestID(
+	return middleware.SetGatewayRequestID(
 		middleware.LogRequest(
 			middleware.ValidateJSONRequest(
 				middleware.RequestTimeout(requestTimeout)(modelRouter),

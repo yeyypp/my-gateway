@@ -1,11 +1,11 @@
-.PHONY: help build dev run-gateway run-mock-a run-mock-b fmt test clean
+.PHONY: help build dev kill run-gateway run-mock-a run-mock-b fmt test clean
 
 BIN_DIR := bin
 
 help:
 	@echo "make build              Build all services"
-	@echo "make dev                Start the local tmux development environment"
-	@echo "make run-gateway        Run the gateway on port 8080"
+	@echo "make dev                Start Gateway and an interactive shell in tmux"
+	@echo "make run-gateway        Run Gateway on port 8080"
 	@echo "make run-mock-a         Run Mock A on port 8091"
 	@echo "make run-mock-b         Run Mock B on port 8092"
 	@echo "make fmt                Format Go files"
@@ -18,6 +18,8 @@ build:
 	go build -o $(BIN_DIR)/mock-upstream ./cmd/mock-upstream
 	go build -o $(BIN_DIR)/study-assistant ./cmd/study-assistant
 
+dev: export LOCAL_CLIENT_KEY_A ?= local-client-a
+dev: export LOCAL_CLIENT_KEY_B ?= local-client-b
 dev:
 	./scripts/dev-tmux.sh
 

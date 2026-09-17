@@ -318,7 +318,7 @@ func TestUpstreamUnavailable(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	proxy := middleware.GetGatewayRequestID(newTestProxy(t, upstream.URL))
+	proxy := middleware.SetGatewayRequestID(newTestProxy(t, upstream.URL))
 
 	upstream.Close() // Close the upstream server to simulate unavailability
 
@@ -404,7 +404,7 @@ func TestProxyRequestAndResponseHeaders(t *testing.T) {
 		t.Fatalf("failed to parse upstream URL: %v", err)
 	}
 
-	proxy := middleware.GetGatewayRequestID(newTestProxy(t, upstream.URL))
+	proxy := middleware.SetGatewayRequestID(newTestProxy(t, upstream.URL))
 	logPath := t.TempDir() + "/gateway.log"
 	if err := log.Init("info", logPath); err != nil {
 		t.Fatalf("initialize logger: %v", err)
@@ -530,7 +530,7 @@ func TestRequestTimeout(t *testing.T) {
 
 	proxy := newTestProxy(t, upstream.URL)
 
-	timeoutHandler := middleware.GetGatewayRequestID(
+	timeoutHandler := middleware.SetGatewayRequestID(
 		middleware.ValidateJSONRequest(middleware.RequestTimeout(300 * time.Millisecond)(proxy)),
 	)
 

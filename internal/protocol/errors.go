@@ -19,6 +19,7 @@ const (
 	ErrorCodeRequestEncodingFailed    ErrorCode = "request_encoding_failed"
 	ErrorCodeUpstreamTimeout          ErrorCode = "upstream_timeout"
 	ErrorCodeUpstreamUnavailable      ErrorCode = "upstream_unavailable"
+	ErrorCodeRateLimit                ErrorCode = "rate_limit"
 )
 
 type ErrorResponse struct {

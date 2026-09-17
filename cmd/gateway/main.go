@@ -69,7 +69,15 @@ func runGateway(config config.Config) error {
 		IdleTimeout:  30 * time.Second,
 	}
 	mux := http.NewServeMux()
-	mux.Handle("POST /v1/chat/completions", middleware.GetGatewayRequestID(middleware.LogRequest(middleware.ValidateJSONRequest(middleware.RequestTimeout(30*time.Second)(router)))))
+	h := middleware.Chain(
+		middleware.SetGatewayRequestID,
+		middleware.LogRequest,
+		middleware.Authorization,
+		middleware.RateLimit,
+		middleware.ValidateJSONRequest,
+		middleware.RequestTimeout(30*time.Second),
+	)
+	mux.Handle("POST /v1/chat/completions", h(router))
 	mux.HandleFunc("GET /healthz", HealthCheck)
 	readyCheck := handlers.NewReadyCheck(config.Upstreams)
 	mux.HandleFunc("GET /readyz", readyCheck.CheckUpstreams)

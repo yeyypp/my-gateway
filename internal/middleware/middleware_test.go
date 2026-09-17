@@ -7,10 +7,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/protocol"
+	"shuai/gateway/internal/ratelimit"
 )
 
 func TestValidateJSONRequestPublishesValidatedBody(t *testing.T) {
@@ -58,7 +60,7 @@ func TestValidateJSONRequestPublishesValidatedBody(t *testing.T) {
 	}
 }
 
-func TestGetGatewayRequestID(t *testing.T) {
+func TestSetGatewayRequestID(t *testing.T) {
 	const (
 		forgedGatewayID = "client-supplied-gateway-id"
 		clientRequestID = "client-request-id"
@@ -69,11 +71,11 @@ func TestGetGatewayRequestID(t *testing.T) {
 	var forwardedRequestID string
 	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var ok bool
-		contextRequestID, ok = r.Context().Value(RequestIDKey).(string)
+		contextRequestID, ok = r.Context().Value(GatewayReqIDKey).(string)
 		if !ok {
 			t.Fatal("expected Gateway request ID in request context")
 		}
-		contextClientRequestID, ok = r.Context().Value(ClientRequestIDKey).(string)
+		contextClientRequestID, ok = r.Context().Value(ClientReqIDKey).(string)
 		if !ok {
 			t.Fatal("expected client request ID in request context")
 		}
@@ -86,7 +88,7 @@ func TestGetGatewayRequestID(t *testing.T) {
 	req.Header.Set(protocol.HeaderClientRequestID, clientRequestID)
 	recorder := httptest.NewRecorder()
 
-	GetGatewayRequestID(downstream).ServeHTTP(recorder, req)
+	SetGatewayRequestID(downstream).ServeHTTP(recorder, req)
 
 	result := recorder.Result()
 	defer result.Body.Close()
@@ -119,7 +121,7 @@ func TestLogRequestRecordsCorrelationFields(t *testing.T) {
 		t.Fatalf("initialize logger: %v", err)
 	}
 
-	handler := GetGatewayRequestID(LogRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := SetGatewayRequestID(LogRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	})))
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -163,8 +165,8 @@ func TestLogRequestRecordsCorrelationFields(t *testing.T) {
 	}
 }
 
-func TestGetGatewayRequestIDGeneratesDifferentIDs(t *testing.T) {
-	handler := GetGatewayRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestSetGatewayRequestIDGeneratesDifferentIDs(t *testing.T) {
+	handler := SetGatewayRequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -188,12 +190,12 @@ func TestGetGatewayRequestIDGeneratesDifferentIDs(t *testing.T) {
 	}
 }
 
-func TestGetGatewayRequestIDIsReturnedForValidationFailure(t *testing.T) {
+func TestSetGatewayRequestIDIsReturnedForValidationFailure(t *testing.T) {
 	downstreamCalled := false
 	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		downstreamCalled = true
 	})
-	handler := GetGatewayRequestID(ValidateJSONRequest(downstream))
+	handler := SetGatewayRequestID(ValidateJSONRequest(downstream))
 
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{"))
@@ -280,6 +282,222 @@ func TestValidateJSONRequestRejectsUnsupportedChatRequests(t *testing.T) {
 			}
 			if err := decoder.Decode(&struct{}{}); err != io.EOF {
 				t.Fatalf("expected exactly one JSON response, got trailing data: %v", err)
+			}
+		})
+	}
+}
+
+func TestAuthorization(t *testing.T) {
+	t.Setenv("LOCAL_CLIENT_KEY_A", "sk-client-a")
+	t.Setenv("LOCAL_CLIENT_KEY_B", "sk-client-b")
+
+	tests := []struct {
+		name          string
+		authorization string
+		wantStatus    int
+		wantClientID  string
+	}{
+		{name: "missing authorization", wantStatus: http.StatusUnauthorized},
+		{name: "malformed authorization", authorization: "Basic credentials", wantStatus: http.StatusUnauthorized},
+		{name: "unknown bearer token", authorization: "Bearer unknown", wantStatus: http.StatusUnauthorized},
+		{name: "client A", authorization: "Bearer sk-client-a", wantStatus: http.StatusAccepted, wantClientID: "client-A"},
+		{name: "client B", authorization: "Bearer sk-client-b", wantStatus: http.StatusAccepted, wantClientID: "client-B"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			downstreamCalls := 0
+			gotClientID := ""
+			downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				downstreamCalls++
+				gotClientID = GetClientIDFromCTX(r.Context())
+				w.WriteHeader(http.StatusAccepted)
+			})
+			handler := SetGatewayRequestID(Authorization(downstream))
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			if tc.authorization != "" {
+				req.Header.Set("Authorization", tc.authorization)
+			}
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+
+			result := recorder.Result()
+			defer result.Body.Close()
+			if result.StatusCode != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d", tc.wantStatus, result.StatusCode)
+			}
+			if got := result.Header.Get(protocol.HeaderGatewayRequestID); got == "" {
+				t.Fatal("expected a Gateway request ID on the response")
+			}
+			if tc.wantClientID == "" {
+				if downstreamCalls != 0 {
+					t.Fatalf("expected rejected request not to reach downstream, got %d calls", downstreamCalls)
+				}
+				return
+			}
+			if downstreamCalls != 1 {
+				t.Fatalf("expected one downstream call, got %d", downstreamCalls)
+			}
+			if gotClientID != tc.wantClientID {
+				t.Fatalf("expected client ID %q, got %q", tc.wantClientID, gotClientID)
+			}
+		})
+	}
+}
+
+type fixedBudgetLimiter struct {
+	mu        sync.Mutex
+	remaining int
+}
+
+func (l *fixedBudgetLimiter) Allow(tokens int) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.remaining < tokens {
+		return false
+	}
+	l.remaining -= tokens
+	return true
+}
+
+func TestRateLimitIsolatesClientsAndRejectsBeforeDownstream(t *testing.T) {
+	t.Setenv("LOCAL_CLIENT_KEY_A", "sk-client-a")
+	t.Setenv("LOCAL_CLIENT_KEY_B", "sk-client-b")
+
+	downstreamClients := make([]string, 0, 2)
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downstreamClients = append(downstreamClients, GetClientIDFromCTX(r.Context()))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := SetGatewayRequestID(Authorization(rateLimitWithFactory(func() ratelimit.Limiter {
+		return &fixedBudgetLimiter{remaining: 1}
+	})(downstream)))
+
+	request := func(key string) *http.Response {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, req)
+		return recorder.Result()
+	}
+
+	firstA := request("sk-client-a")
+	defer firstA.Body.Close()
+	if firstA.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected client A's first request to succeed, got %d", firstA.StatusCode)
+	}
+
+	secondA := request("sk-client-a")
+	defer secondA.Body.Close()
+	if secondA.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected client A's second request to be rate limited, got %d", secondA.StatusCode)
+	}
+	if got := secondA.Header.Get(protocol.HeaderGatewayRequestID); got == "" {
+		t.Fatal("expected the rate-limited response to carry a Gateway request ID")
+	}
+	var errorResponse protocol.ErrorResponse
+	if err := json.NewDecoder(secondA.Body).Decode(&errorResponse); err != nil {
+		t.Fatalf("decode rate-limit response: %v", err)
+	}
+	if errorResponse.Error.Code != protocol.ErrorCodeRateLimit {
+		t.Fatalf("expected rate-limit error code %q, got %q", protocol.ErrorCodeRateLimit, errorResponse.Error.Code)
+	}
+	if len(downstreamClients) != 1 {
+		t.Fatalf("expected rate-limited request not to reach downstream, got clients %q", downstreamClients)
+	}
+
+	firstB := request("sk-client-b")
+	defer firstB.Body.Close()
+	if firstB.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected client B not to share client A's exhausted budget, got %d", firstB.StatusCode)
+	}
+	wantClients := []string{"client-A", "client-B"}
+	if len(downstreamClients) != len(wantClients) {
+		t.Fatalf("expected downstream clients %q, got %q", wantClients, downstreamClients)
+	}
+	for i := range wantClients {
+		if downstreamClients[i] != wantClients[i] {
+			t.Fatalf("expected downstream clients %q, got %q", wantClients, downstreamClients)
+		}
+	}
+}
+
+func TestLogRequestRecordsAdmissionRejections(t *testing.T) {
+	t.Setenv("LOCAL_CLIENT_KEY_A", "sk-client-a")
+
+	tests := []struct {
+		name          string
+		authorization string
+		wantStatus    int
+		inner         func(http.Handler) http.Handler
+	}{
+		{
+			name:       "unauthorized",
+			wantStatus: http.StatusUnauthorized,
+			inner:      Authorization,
+		},
+		{
+			name:          "rate limited",
+			authorization: "Bearer sk-client-a",
+			wantStatus:    http.StatusTooManyRequests,
+			inner: func(next http.Handler) http.Handler {
+				return Authorization(rateLimitWithFactory(func() ratelimit.Limiter {
+					return &fixedBudgetLimiter{}
+				})(next))
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logPath := t.TempDir() + "/gateway.log"
+			if err := log.Init("info", logPath); err != nil {
+				t.Fatalf("initialize logger: %v", err)
+			}
+
+			downstreamCalled := false
+			downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				downstreamCalled = true
+				w.WriteHeader(http.StatusNoContent)
+			})
+			handler := SetGatewayRequestID(LogRequest(tc.inner(downstream)))
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			if tc.authorization != "" {
+				req.Header.Set("Authorization", tc.authorization)
+			}
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+			if downstreamCalled {
+				t.Fatal("expected admission rejection before downstream")
+			}
+			result := recorder.Result()
+			defer result.Body.Close()
+			if result.StatusCode != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d", tc.wantStatus, result.StatusCode)
+			}
+			requestID := result.Header.Get(protocol.HeaderGatewayRequestID)
+			if requestID == "" {
+				t.Fatal("expected a Gateway request ID on the response")
+			}
+
+			if err := log.Sync(); err != nil {
+				t.Fatalf("sync logger: %v", err)
+			}
+			content, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("read log: %v", err)
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(content, &entry); err != nil {
+				t.Fatalf("decode log: %v", err)
+			}
+			if got := entry["status"]; got != float64(tc.wantStatus) {
+				t.Fatalf("expected logged status %d, got %#v", tc.wantStatus, got)
+			}
+			if got := entry["gateway_request_id"]; got != requestID {
+				t.Fatalf("expected logged request ID %q, got %#v", requestID, got)
 			}
 		})
 	}

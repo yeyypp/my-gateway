@@ -4,10 +4,10 @@
 
 Roadmap: [docs/AI_GATEWAY_PLAN.md](docs/AI_GATEWAY_PLAN.md)
 
-A small Go AI Gateway: it exposes a minimal Chat Completions endpoint, routes logical models to upstreams, and rewrites them to the model name each upstream uses. Clients only need the Gateway address and a logical model name.
+A small Go AI Gateway: it exposes a minimal Chat Completions endpoint, routes logical models to upstreams, and rewrites them to the model name each upstream uses. Clients only need the Gateway address, a caller credential, and a logical model name.
 
 ```text
-client → POST :8080/v1/chat/completions → Gateway (request ID / validation / timeout / logging)
+client → POST :8080/v1/chat/completions → Gateway (identity / rate limit / request ID / validation / logging)
   → ModelRouter: model-a→mock-a, model-b→mock-b, local→ollama, flash|pro→deepseek
   → model rewrite + reverse proxy → upstream
 ```
@@ -17,16 +17,21 @@ client → POST :8080/v1/chat/completions → Gateway (request ID / validation /
 Requires Go 1.26.1; the tmux flow also needs `tmux`.
 
 ```sh
-make dev     # start Gateway, Mock A, Mock B in tmux
+make dev     # tmux: Gateway on the left, interactive shell on the right
 make kill    # stop the session
-# or run separately: make run-mock-a / make run-mock-b / make run-gateway
+# without tmux:
+export LOCAL_CLIENT_KEY_A=local-client-a
+export LOCAL_CLIENT_KEY_B=local-client-b
+make run-gateway
 ```
+
+The default local caller keys are `local-client-a` and `local-client-b`. Override them with `make dev LOCAL_CLIENT_KEY_A=<key> LOCAL_CLIENT_KEY_B=<key>`; both are exported into the tmux session. `make dev` does not start the mocks. Run `make run-mock-a` or `make run-mock-b` only when testing `model-a` or `model-b`.
 
 | Process | Address | Purpose |
 |---|---|---|
 | Gateway | `http://localhost:8080` | Client API, liveness, readiness |
-| Mock A | `http://localhost:8091` | `model-a` upstream |
-| Mock B | `http://localhost:8092` | `model-b` upstream |
+| Mock A (optional) | `http://localhost:8091` | `model-a` upstream |
+| Mock B (optional) | `http://localhost:8092` | `model-b` upstream |
 
 Reads `configs/default_config.yaml` by default; override with `go run ./cmd/gateway start --config <file>`. The full config is validated before listening: invalid URLs, duplicate names, missing fields, or unknown upstream references fail startup; a missing upstream credential does not and is reported by readiness instead.
 
@@ -38,7 +43,7 @@ Minimal `POST /v1/chat/completions` request:
 {"model":"model-a","messages":[{"role":"user","content":"test"}],"stream":false}
 ```
 
-`model` is the logical model; `messages` must be non-empty and supports only text `role`/`content`; `stream=true` requires an upstream that supports OpenAI-compatible SSE. The Gateway rewrites only the top-level `model` field and forwards every other field with the JSON value the client sent.
+Requests must include `Authorization: Bearer <caller key>`. `model` is the logical model; `messages` must be non-empty and supports only text `role`/`content`; `stream=true` requires an upstream that supports OpenAI-compatible SSE. The Gateway rewrites only the top-level `model` field and forwards every other field with the JSON value the client sent.
 
 Success returns a minimal Chat Completions object. Gateway-generated errors use a stable envelope:
 
@@ -46,7 +51,7 @@ Success returns a minimal Chat Completions object. Gateway-generated errors use 
 {"error":{"message":"...","type":"...","param":"...","code":"..."}}
 ```
 
-Invalid JSON, unsupported values, or unknown models return 400; an oversized body returns 413; an unreachable upstream returns 502; a Gateway or network timeout returns 504. An explicit upstream HTTP response passes through with its status and body.
+A missing or invalid caller credential returns 401, and exceeding the caller's request-rate limit returns 429. Invalid JSON, unsupported values, or unknown models return 400; an oversized body returns 413; an unreachable upstream returns 502; a Gateway or network timeout returns 504. An explicit upstream HTTP response passes through with its status and body.
 
 ## Routing
 
@@ -79,17 +84,27 @@ The client still requests `model-a`; it is rewritten to Mock B's `model-b` befor
 
 ## Send requests
 
-```sh
-# Reference CLI (prints the Gateway request ID on the first line)
-go run ./cmd/study-assistant analyze test-data/test.txt --model model-a
+These examples use the default `local` route. Ensure the configured Ollama address is reachable and run `ollama run gemma4:e2b-mlx` on the host first. If the command is not run from the right-hand pane created by `make dev`, first set `LOCAL_CLIENT_KEY_A` in the current shell to the same value used by the Gateway.
 
-# Equivalent direct request
+Non-streaming request:
+
+```sh
 curl -i http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $LOCAL_CLIENT_KEY_A" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"model-a","messages":[{"role":"user","content":"test"}]}'
+  -d '{"model":"local","messages":[{"role":"user","content":"用一句话介绍 Go"}],"stream":false}'
 ```
 
-Switch the model to `model-b` to route to Mock B; unknown models return 400 with the common error envelope.
+Streaming request (`-N` disables curl output buffering):
+
+```sh
+curl -N -i http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $LOCAL_CLIENT_KEY_A" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"local","messages":[{"role":"user","content":"用一句话介绍 Go"}],"stream":true}'
+```
+
+To use a mock, start its process manually and switch the model to `model-a` or `model-b`. Unknown models return 400 with the common error envelope.
 
 ## Correlation
 
@@ -99,7 +114,7 @@ Switch the model to `model-b` to route to Mock B; unknown models return 400 with
 | `X-Gateway-Request-ID` | Gateway | Generated, returned to the client, forwarded upstream, and used to join Gateway and Mock logs; cannot be replaced |
 | `X-Request-ID` | Upstream | Generated and returned independently; the Gateway records it without replacing its own ID |
 
-`X-Gateway-Request-ID` appears in the Gateway's `upstream response received` and `gateway request completed` logs and the selected Mock's `mock request completed` log, so a request can be followed from the CLI to the upstream. Logs omit complete Authorization values, file contents, and raw request bodies.
+`X-Gateway-Request-ID` appears in the Gateway's `upstream response received` and `gateway request completed` logs and the selected Mock's `mock request completed` log, so a request can be followed from curl to the upstream. Logs omit complete Authorization values, file contents, and raw request bodies.
 
 ## Health and readiness
 
@@ -118,19 +133,13 @@ Readiness is recalculated from fresh probes on every request, so a failed busine
 
 ## Ollama and streaming
 
-The default `local` route assumes Ollama on the macOS host and the Gateway in an OrbStack Linux VM. Run `ollama run gemma4:e2b-mlx` on the host, then:
-
-```sh
-go run ./cmd/study-assistant analyze test-data/test.txt --model local            # non-streaming
-go run ./cmd/study-assistant analyze test-data/test.txt --model local --stream   # SSE: request ID, model, TTFT, incremental content
-```
-
-`curl -N` shows the raw SSE: a compatible upstream returns `Content-Type: text/event-stream`, minimal Chat Completions chunks, and a final `data: [DONE]`. On other environments, point the Ollama `base_url` at an address reachable from the Gateway; it has no `health_url` and does not affect readiness.
+The default `local` route assumes Ollama on the macOS host and the Gateway in an OrbStack Linux VM. The `curl -N` example above shows the raw SSE: a compatible upstream returns `Content-Type: text/event-stream`, minimal Chat Completions chunks, and a final `data: [DONE]`. On other environments, point the Ollama `base_url` at an address reachable from the Gateway; it has no `health_url` and does not affect readiness.
 
 ## Current limits
 
 - Reads only `model`, text `messages`, and `stream`; other fields are forwarded untouched.
 - Streaming relies on the selected upstream returning OpenAI-compatible SSE.
+- Caller identities currently come from two local environment variables, and per-key request-rate limits apply only within one Gateway process.
 - Rewriting `model` re-serializes the request body: field values stay intact while key order, whitespace, and HTML escaping can change.
 - Non-streaming requests keep the overall timeout and write deadline; streaming bypasses the overall timeout and clears the write deadline. Cancellation, backpressure, and upstream interruption have dedicated tests; streaming metrics and end-reason classification remain planned work in the [roadmap](docs/AI_GATEWAY_PLAN.md).
 - Configuration is loaded at startup; changing a route requires a restart.
