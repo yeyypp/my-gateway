@@ -244,6 +244,26 @@ func rateLimitWithFactory(newLimiter func() ratelimit.Limiter) Middleware {
 	}
 }
 
+func ConcurrencyLimit(next http.Handler) http.Handler {
+	cl := ratelimit.NewGatewayConcurrencyLimiter(100, 10)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientID := GetClientIDFromCTX(r.Context())
+		if len(clientID) == 0 {
+			handlers.SendError(w, protocol.APIError{}, http.StatusUnauthorized)
+			return
+		}
+
+		if !cl.TryAcquire(clientID) {
+			handlers.SendError(w, protocol.APIError{}, http.StatusTooManyRequests)
+			return
+		}
+		// 必须放在这里，不能放在serverhttp后，防止函数中panic，无法执行release
+		defer cl.Release(clientID)
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func GetClientIDFromCTX(ctx context.Context) string {
 	clientID, ok := ctx.Value(ClientID).(string)
 	if !ok {

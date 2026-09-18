@@ -73,6 +73,7 @@ func runGateway(config config.Config) error {
 		middleware.SetGatewayRequestID,
 		middleware.LogRequest,
 		middleware.Authorization,
+		middleware.ConcurrencyLimit,
 		middleware.RateLimit,
 		middleware.ValidateJSONRequest,
 		middleware.RequestTimeout(30*time.Second),
