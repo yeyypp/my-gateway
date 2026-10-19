@@ -30,13 +30,17 @@ func newTestProxy(t *testing.T, upstreamURL string) http.Handler {
 }
 
 func newTestProxyWithAPIKey(t *testing.T, upstreamURL, apiKey string) http.Handler {
+	return newTestProxyWithAttempt(t, upstreamURL, apiKey, nil)
+}
+
+func newTestProxyWithAttempt(t *testing.T, upstreamURL, apiKey string, attempt *ReqContext) http.Handler {
 	t.Helper()
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	t.Cleanup(transport.CloseIdleConnections)
 
 	proxy, err := BuildReverseProxy(
-		RoutePolicy{UpstreamURL: upstreamURL, UpstreamModel: "real-model"},
+		RoutePolicy{UpstreamURL: upstreamURL, DefaultModel: "real-model"},
 		transport,
 		apiKey,
 	)
@@ -59,7 +63,12 @@ func newTestProxyWithAPIKey(t *testing.T, upstreamURL, apiKey string) http.Handl
 		if _, ok := middleware.GetRequestBodyFromCTX(ctx); !ok {
 			ctx = context.WithValue(ctx, middleware.RequestBodyKey, []byte(testChatBody))
 		}
-		proxy.ServeHTTP(w, r.WithContext(ctx))
+		rc := attempt
+
+		if rc == nil {
+			rc = NewReqContext()
+		}
+		proxy.ServeHTTP(w, AttachReqContext(rc, r.WithContext(ctx)))
 	})
 }
 
@@ -214,7 +223,7 @@ func TestProxyRejectsRequestWithoutValidatedBody(t *testing.T) {
 	t.Cleanup(transport.CloseIdleConnections)
 
 	proxy, err := BuildReverseProxy(
-		RoutePolicy{UpstreamURL: "http://127.0.0.1:1", UpstreamModel: "real-model"},
+		RoutePolicy{UpstreamURL: "http://127.0.0.1:1", DefaultModel: "real-model"},
 		transport,
 		"",
 	)
@@ -318,42 +327,26 @@ func TestUpstreamUnavailable(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	proxy := middleware.SetGatewayRequestID(newTestProxy(t, upstream.URL))
+	rc := NewReqContext()
+	proxy := middleware.SetGatewayRequestID(newTestProxyWithAttempt(t, upstream.URL, "", rc))
 
 	upstream.Close() // Close the upstream server to simulate unavailability
 
-	gateway := httptest.NewServer(proxy)
-	defer gateway.Close()
-
-	resp, err := http.Post(gateway.URL, "application/json", strings.NewReader(testChatBody))
-	if err != nil {
-		t.Fatalf("failed to send request to gateway: %v", err)
+	recorder := httptest.NewRecorder()
+	proxy.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(testChatBody)))
+	if rc.IsSuccess() || rc.err == nil {
+		t.Fatalf("expected failed upstream attempt, got success=%t err=%v", rc.IsSuccess(), rc.err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Errorf("expected status code %d, got %d", http.StatusBadGateway, resp.StatusCode)
+	if rc.gotConn.Load() {
+		t.Fatal("connection refused before the request obtained a connection")
 	}
-	requestIDs := resp.Header.Values("X-Gateway-Request-ID")
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("proxy wrote a response before the caller could choose a fallback: %q", recorder.Body.String())
+	}
+	requestIDs := recorder.Header().Values("X-Gateway-Request-ID")
 	if len(requestIDs) != 1 || requestIDs[0] == "" {
 		t.Fatalf("expected exactly one non-empty Gateway request ID, got %q", requestIDs)
 	}
-
-	var respJSON protocol.ErrorResponse
-	if err := json.NewDecoder(resp.Body).Decode(&respJSON); err != nil {
-		t.Fatalf("failed to decode response body: %v", err)
-	}
-
-	if respJSON.Error.Message != "upstream unavailable" {
-		t.Errorf("expected response message %q, got %q", "upstream unavailable", respJSON.Error.Message)
-	}
-	if respJSON.Error.Type != protocol.ErrorTypeGateway {
-		t.Errorf("expected error type %q, got %q", protocol.ErrorTypeGateway, respJSON.Error.Type)
-	}
-	if respJSON.Error.Code != protocol.ErrorCodeUpstreamUnavailable {
-		t.Errorf("expected error code %q, got %q", protocol.ErrorCodeUpstreamUnavailable, respJSON.Error.Code)
-	}
-
 }
 
 // implemented by codex, too tired
@@ -528,7 +521,8 @@ func TestRequestTimeout(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	proxy := newTestProxy(t, upstream.URL)
+	rc := NewReqContext()
+	proxy := newTestProxyWithAttempt(t, upstream.URL, "", rc)
 
 	timeoutHandler := middleware.SetGatewayRequestID(
 		middleware.ValidateJSONRequest(middleware.RequestTimeout(300 * time.Millisecond)(proxy)),
@@ -552,32 +546,16 @@ func TestRequestTimeout(t *testing.T) {
 		)
 	}
 
-	resp := recorder.Result()
-	defer resp.Body.Close()
-
-	var jsonResp protocol.ErrorResponse
-	decoder := json.NewDecoder(resp.Body)
-	if err := decoder.Decode(&jsonResp); err != nil {
-		t.Fatalf("failed to decode json, err:%v\n", err)
+	if rc.IsSuccess() || !errors.Is(rc.err, context.DeadlineExceeded) {
+		t.Fatalf("expected timed out upstream attempt, got success=%t err=%v", rc.IsSuccess(), rc.err)
 	}
-
-	if jsonResp.Error.Message != "upstream timeout" {
-		t.Fatalf(
-			"expected response message %q, got %q",
-			"upstream timeout",
-			jsonResp.Error.Message,
-		)
+	if !rc.gotConn.Load() {
+		t.Fatal("upstream should have received the request before timing out")
 	}
-	if jsonResp.Error.Type != protocol.ErrorTypeGateway {
-		t.Fatalf("expected error type %q, got %q", protocol.ErrorTypeGateway, jsonResp.Error.Type)
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("proxy wrote a response before the caller handled the timeout: %q", recorder.Body.String())
 	}
-	if jsonResp.Error.Code != protocol.ErrorCodeUpstreamTimeout {
-		t.Fatalf("expected error code %q, got %q", protocol.ErrorCodeUpstreamTimeout, jsonResp.Error.Code)
-	}
-	if resp.StatusCode != http.StatusGatewayTimeout {
-		t.Fatalf("status code should be 504")
-	}
-	requestIDs := resp.Header.Values("X-Gateway-Request-ID")
+	requestIDs := recorder.Header().Values("X-Gateway-Request-ID")
 	if len(requestIDs) != 1 || requestIDs[0] == "" {
 		t.Fatalf("expected exactly one non-empty Gateway request ID, got %q", requestIDs)
 	}

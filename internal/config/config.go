@@ -19,17 +19,17 @@ type Config struct {
 }
 
 type Model struct {
-	LogicModel string `yaml:"logic_model"`
-	Upstream   string `yaml:"upstream"`
-	RealModel  string `yaml:"real_model"`
+	LogicModel string   `yaml:"logic_model"`
+	Upstreams  []string `yaml:"upstreams"`
 }
 
 type Upstream struct {
-	Name      string `yaml:"name"`
-	BaseURL   string `yaml:"base_url"`
-	HealthURL string `yaml:"health_url"`
-	APIKeyEnv string `yaml:"api_key_env"`
-	APIKey    string `yaml:"-"`
+	Name         string `yaml:"name"`
+	BaseURL      string `yaml:"base_url"`
+	HealthURL    string `yaml:"health_url"`
+	APIKeyEnv    string `yaml:"api_key_env"`
+	APIKey       string `yaml:"-"`
+	DefaultModel string `yaml:"default_model"`
 }
 
 func Load(configFile string) (Config, error) {
@@ -91,17 +91,21 @@ func validateConfig(config Config) error {
 		if len(model.LogicModel) == 0 {
 			return fmt.Errorf("logic model at index %d has empty name", index)
 		}
-		if len(model.RealModel) == 0 {
-			return fmt.Errorf("real model at index %d has empty name", index)
-		}
 		if _, ok := existsM[model.LogicModel]; ok {
 			return fmt.Errorf("duplicate model name %q", model.LogicModel)
 		}
-		if len(model.Upstream) == 0 {
+		if len(model.Upstreams) == 0 {
 			return fmt.Errorf("model %q has empty upstream", model.LogicModel)
 		}
-		if _, ok := exists[model.Upstream]; !ok {
-			return fmt.Errorf("model %q references unknown upstream %q", model.LogicModel, model.Upstream)
+		seenUpstreams := make(map[string]struct{}, len(model.Upstreams))
+		for _, upstream := range model.Upstreams {
+			if _, ok := exists[upstream]; !ok {
+				return fmt.Errorf("model %q references unknown upstream %q", model.LogicModel, upstream)
+			}
+			if _, ok := seenUpstreams[upstream]; ok {
+				return fmt.Errorf("model %q repeats upstream %q", model.LogicModel, upstream)
+			}
+			seenUpstreams[upstream] = struct{}{}
 		}
 		existsM[model.LogicModel] = struct{}{}
 	}

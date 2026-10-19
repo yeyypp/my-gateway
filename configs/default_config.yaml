@@ -1,29 +1,14 @@
 upstreams:
-  - name: mock-a
-    base_url: http://localhost:8091
-    health_url: http://localhost:8091/readyz
-  - name: mock-b
-    base_url: http://localhost:8092
-    health_url: http://localhost:8092/readyz
   - name: ollama
     base_url: http://host.orb.internal:11434
+    default_model: gemma4:e2b-mlx
   - name: deepseek
     base_url: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
+    default_model: deepseek-v4-flash
 
 models:
-  - logic_model: model-a
-    upstream: mock-a
-    real_model: model-a
-  - logic_model: model-b
-    upstream: mock-b
-    real_model: model-b
-  - logic_model: local
-    upstream: ollama
-    real_model: gemma4:e2b-mlx
-  - logic_model: flash 
-    upstream: deepseek
-    real_model: deepseek-v4-flash 
-  - logic_model: pro
-    upstream: deepseek
-    real_model: deepseek-v4-pro
+  - logic_model: normal
+    upstreams:
+              - ollama
+              - deepseek

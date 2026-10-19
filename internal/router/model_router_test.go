@@ -10,24 +10,36 @@ import (
 
 	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/protocol"
+	"shuai/gateway/internal/proxy"
 )
 
 func TestModelRouterRoutesKnownModels(t *testing.T) {
-	routes := map[string]http.Handler{
-		"model-a": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Selected-Model", "model-a")
+	routes := make(map[string][]*proxy.Proxy)
+	transport := &http.Transport{}
+	t.Cleanup(transport.CloseIdleConnections)
+	for _, model := range []string{"model-a", "model-b"} {
+		model := model
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Selected-Model", model)
 			w.WriteHeader(http.StatusNoContent)
-		}),
-		"model-b": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Selected-Model", "model-b")
-			w.WriteHeader(http.StatusNoContent)
-		}),
+		}))
+		t.Cleanup(upstream.Close)
+		p, err := proxy.BuildReverseProxy(proxy.RoutePolicy{
+			UpstreamName: model,
+			UpstreamURL:  upstream.URL,
+			DefaultModel: model,
+		}, transport, "")
+		if err != nil {
+			t.Fatalf("build %s proxy: %v", model, err)
+		}
+		routes[model] = []*proxy.Proxy{p}
 	}
 	modelRouter := NewModelRouter(routes)
 
 	for _, model := range []string{"model-a", "model-b"} {
 		t.Run(model, func(t *testing.T) {
 			ctx := context.WithValue(context.Background(), middleware.ChatReqKey, protocol.ChatCompletionRequest{Model: model})
+			ctx = context.WithValue(ctx, middleware.RequestBodyKey, []byte(`{"model":"test"}`))
 			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", nil)
 			recorder := httptest.NewRecorder()
 
@@ -84,7 +96,7 @@ func TestModelRouterRejectsInvalidModels(t *testing.T) {
 		},
 	}
 
-	modelRouter := NewModelRouter(map[string]http.Handler{})
+	modelRouter := NewModelRouter(map[string][]*proxy.Proxy{})
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()

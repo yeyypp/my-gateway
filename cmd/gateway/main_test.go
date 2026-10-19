@@ -27,14 +27,14 @@ func newStreamingGatewayHandler(t *testing.T, upstreamURL string, requestTimeout
 		Models: []config.Model{
 			{
 				LogicModel: "logic-model",
-				Upstream:   "test",
-				RealModel:  "real-model",
+				Upstreams:  []string{"test"},
 			},
 		},
 		Upstreams: []config.Upstream{
 			{
-				Name:    "test",
-				BaseURL: upstreamURL,
+				Name:         "test",
+				BaseURL:      upstreamURL,
+				DefaultModel: "real-model",
 			},
 		},
 	}
@@ -214,11 +214,11 @@ func TestConfigToRouter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Config{
 				Models: []config.Model{
-					{LogicModel: "model-a", Upstream: tc.selectedUpstream, RealModel: tc.realModel},
+					{LogicModel: "model-a", Upstreams: []string{tc.selectedUpstream}},
 				},
 				Upstreams: []config.Upstream{
-					{Name: "mock-a", BaseURL: upstreamA.URL},
-					{Name: "mock-b", BaseURL: upstreamB.URL},
+					{Name: "mock-a", BaseURL: upstreamA.URL, DefaultModel: "real-model-a"},
+					{Name: "mock-b", BaseURL: upstreamB.URL, DefaultModel: "real-model-b"},
 				},
 			}
 
@@ -628,5 +628,392 @@ func TestUpstreamCrash(t *testing.T) {
 		}
 	case <-time.After(operationTimeout):
 		t.Fatalf("timed out waiting %v for Upstream connection interruption", operationTimeout)
+	}
+}
+
+func TestBackupUpstream(t *testing.T) {
+	u1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("closed primary upstream unexpectedly received a request")
+		http.Error(w, "primary should be unavailable", http.StatusInternalServerError)
+	}))
+	u1.Close()
+
+	var backupCalls atomic.Int32
+	u2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backupCalls.Add(1)
+		content, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read backup request body: %v", err)
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		var chatReq protocol.ChatCompletionRequest
+		if err := json.Unmarshal(content, &chatReq); err != nil {
+			t.Errorf("decode backup request body: %v", err)
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if chatReq.Model != "u2-model" {
+			t.Errorf("backup model = %q, want %q", chatReq.Model, "u2-model")
+			http.Error(w, "wrong model", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("X-Selected-Upstream", "u2")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer u2.Close()
+
+	cfg := config.Config{
+		Models: []config.Model{
+			{
+				LogicModel: "test",
+				Upstreams:  []string{"u1", "u2"},
+			},
+		},
+		Upstreams: []config.Upstream{
+			{
+				Name:         "u1",
+				BaseURL:      u1.URL,
+				DefaultModel: "u1-model",
+			},
+			{
+				Name:         "u2",
+				BaseURL:      u2.URL,
+				DefaultModel: "u2-model",
+			},
+		},
+	}
+
+	r, err := buildRouter(cfg)
+	if err != nil {
+		t.Fatalf("build router: %v", err)
+	}
+	router := middleware.SetGatewayRequestID(
+		middleware.ValidateJSONRequest(
+			middleware.RequestTimeout(10 * time.Second)(r),
+		),
+	)
+	recorder := httptest.NewRecorder()
+
+	chatReq := protocol.ChatCompletionRequest{
+		Model: "test",
+		Messages: []protocol.Message{
+			{
+				Role:    "user",
+				Content: "test",
+			},
+		},
+		Stream: false,
+	}
+	jsonData, err := json.Marshal(chatReq)
+	if err != nil {
+		t.Fatalf("encode chat request: %v", err)
+	}
+
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(jsonData)))
+	result := recorder.Result()
+	defer result.Body.Close()
+
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("Gateway status = %d, want %d; body: %s", result.StatusCode, http.StatusOK, recorder.Body.String())
+	}
+	if got := result.Header.Get("X-Selected-Upstream"); got != "u2" {
+		t.Fatalf("selected upstream = %q, want %q", got, "u2")
+	}
+	if got := backupCalls.Load(); got != 1 {
+		t.Fatalf("backup calls = %d, want 1", got)
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("Gateway appended an unexpected response body: %q", recorder.Body.String())
+	}
+}
+
+func newFallbackTestHandler(t *testing.T, timeout time.Duration, primaryURL, backupURL string) http.Handler {
+	t.Helper()
+
+	cfg := config.Config{
+		Models: []config.Model{{LogicModel: "test", Upstreams: []string{"primary", "backup"}}},
+		Upstreams: []config.Upstream{
+			{Name: "primary", BaseURL: primaryURL, DefaultModel: "primary-model"},
+			{Name: "backup", BaseURL: backupURL, DefaultModel: "backup-model"},
+		},
+	}
+	modelRouter, err := buildRouter(cfg)
+	if err != nil {
+		t.Fatalf("build fallback router: %v", err)
+	}
+	return middleware.SetGatewayRequestID(
+		middleware.ValidateJSONRequest(middleware.RequestTimeout(timeout)(modelRouter)),
+	)
+}
+
+func newFallbackTestRequest(t *testing.T, ctx context.Context) *http.Request {
+	t.Helper()
+	chatReq := protocol.ChatCompletionRequest{
+		Model:    "test",
+		Messages: []protocol.Message{{Role: "user", Content: "test"}},
+	}
+	data, err := json.Marshal(chatReq)
+	if err != nil {
+		t.Fatalf("encode fallback request: %v", err)
+	}
+	return httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", bytes.NewReader(data))
+}
+
+func TestFallbackPrimaryHealthy(t *testing.T) {
+	var primaryCalls, backupCalls atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls.Add(1)
+		var chatReq protocol.ChatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&chatReq); err != nil {
+			t.Errorf("decode primary request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if chatReq.Model != "primary-model" {
+			t.Errorf("primary model = %q, want primary-model", chatReq.Model)
+		}
+		w.Header().Set("X-Selected-Upstream", "primary")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backupCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backup.Close()
+
+	handler := newFallbackTestHandler(t, 5*time.Second, primary.URL, backup.URL)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newFallbackTestRequest(t, context.Background()))
+	result := recorder.Result()
+	defer result.Body.Close()
+	if result.StatusCode != http.StatusOK || result.Header.Get("X-Selected-Upstream") != "primary" {
+		t.Fatalf("status = %d, selected upstream = %q; want 200 and primary", result.StatusCode, result.Header.Get("X-Selected-Upstream"))
+	}
+	if got := primaryCalls.Load(); got != 1 {
+		t.Errorf("primary calls = %d, want 1", got)
+	}
+	if got := backupCalls.Load(); got != 0 {
+		t.Errorf("backup calls = %d, want 0", got)
+	}
+}
+
+func TestFallbackAllUpstreamsFail(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("closed primary unexpectedly received a request")
+	}))
+	primary.Close()
+
+	var backupCalls atomic.Int32
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backupCalls.Add(1)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack backup connection: %v", err)
+			return
+		}
+		conn.Close()
+	}))
+	defer backup.Close()
+
+	handler := newFallbackTestHandler(t, 5*time.Second, primary.URL, backup.URL)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newFallbackTestRequest(t, context.Background()))
+	result := recorder.Result()
+	defer result.Body.Close()
+	if result.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body: %s", result.StatusCode, recorder.Body.String())
+	}
+	var response protocol.ErrorResponse
+	if err := json.NewDecoder(result.Body).Decode(&response); err != nil {
+		t.Fatalf("decode gateway error: %v", err)
+	}
+	if response.Error.Code != protocol.ErrorCodeUpstreamUnavailable {
+		t.Errorf("error code = %q, want %q", response.Error.Code, protocol.ErrorCodeUpstreamUnavailable)
+	}
+	if got := backupCalls.Load(); got != 1 {
+		t.Errorf("backup calls = %d, want 1", got)
+	}
+}
+
+func TestFallbackDoesNotSwitchOnUpstream503(t *testing.T) {
+	var backupCalls atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Selected-Upstream", "primary")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "provider unavailable")
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backupCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backup.Close()
+
+	handler := newFallbackTestHandler(t, 5*time.Second, primary.URL, backup.URL)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newFallbackTestRequest(t, context.Background()))
+	result := recorder.Result()
+	defer result.Body.Close()
+	if result.StatusCode != http.StatusServiceUnavailable || result.Header.Get("X-Selected-Upstream") != "primary" {
+		t.Fatalf("status = %d, selected upstream = %q; want provider 503", result.StatusCode, result.Header.Get("X-Selected-Upstream"))
+	}
+	if got := recorder.Body.String(); got != "provider unavailable" {
+		t.Errorf("response body = %q, want provider error", got)
+	}
+	if got := backupCalls.Load(); got != 0 {
+		t.Errorf("backup calls = %d, want 0", got)
+	}
+}
+
+func TestFallbackDoesNotSwitchOnUpstreamTimeout(t *testing.T) {
+	var backupCalls atomic.Int32
+	primaryEntered := make(chan struct{})
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		close(primaryEntered)
+		<-r.Context().Done()
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backupCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backup.Close()
+
+	handler := newFallbackTestHandler(t, 200*time.Millisecond, primary.URL, backup.URL)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newFallbackTestRequest(t, context.Background()))
+	result := recorder.Result()
+	defer result.Body.Close()
+	select {
+	case <-primaryEntered:
+	default:
+		t.Fatal("primary upstream did not receive the request")
+	}
+	if result.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504; body: %s", result.StatusCode, recorder.Body.String())
+	}
+	var response protocol.ErrorResponse
+	if err := json.NewDecoder(result.Body).Decode(&response); err != nil {
+		t.Fatalf("decode gateway timeout: %v", err)
+	}
+	if response.Error.Code != protocol.ErrorCodeUpstreamTimeout {
+		t.Errorf("error code = %q, want %q", response.Error.Code, protocol.ErrorCodeUpstreamTimeout)
+	}
+	if got := backupCalls.Load(); got != 0 {
+		t.Errorf("backup calls = %d, want 0", got)
+	}
+}
+
+func TestFallbackDoesNotSwitchAfterClientCancel(t *testing.T) {
+	var backupCalls atomic.Int32
+	primaryEntered := make(chan struct{})
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		close(primaryEntered)
+		<-r.Context().Done()
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backupCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backup.Close()
+
+	handler := newFallbackTestHandler(t, 5*time.Second, primary.URL, backup.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	request := newFallbackTestRequest(t, ctx)
+	go func() {
+		handler.ServeHTTP(httptest.NewRecorder(), request)
+		close(done)
+	}()
+	select {
+	case <-primaryEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("primary upstream did not receive the request")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("gateway did not finish after client cancellation")
+	}
+	if got := backupCalls.Load(); got != 0 {
+		t.Errorf("backup calls = %d, want 0", got)
+	}
+}
+
+func TestFallbackHoldsConcurrencySlotAcrossAttempts(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("closed primary unexpectedly received a request")
+	}))
+	primary.Close()
+
+	var backupCalls atomic.Int32
+	backupEntered := make(chan struct{})
+	releaseBackup := make(chan struct{})
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if backupCalls.Add(1) == 1 {
+			close(backupEntered)
+		}
+		select {
+		case <-releaseBackup:
+			w.WriteHeader(http.StatusOK)
+		case <-r.Context().Done():
+		}
+	}))
+	defer backup.Close()
+	defer func() {
+		select {
+		case <-releaseBackup:
+		default:
+			close(releaseBackup)
+		}
+	}()
+
+	handler := middleware.ConcurrencyLimitWithLimits(1, 1)(
+		newFallbackTestHandler(t, 5*time.Second, primary.URL, backup.URL),
+	)
+	clientCtx := context.WithValue(context.Background(), middleware.ClientID, "client-a")
+	first := httptest.NewRecorder()
+	firstDone := make(chan struct{})
+	firstRequest := newFallbackTestRequest(t, clientCtx)
+	go func() {
+		handler.ServeHTTP(first, firstRequest)
+		close(firstDone)
+	}()
+	select {
+	case <-backupEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("backup upstream did not receive the first request")
+	}
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, newFallbackTestRequest(t, clientCtx))
+	if second.Code != http.StatusTooManyRequests {
+		t.Errorf("concurrent request status = %d, want 429", second.Code)
+	}
+	if got := backupCalls.Load(); got != 1 {
+		t.Errorf("backup calls before first request finishes = %d, want 1", got)
+	}
+	close(releaseBackup)
+	select {
+	case <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first request did not finish after backup was released")
+	}
+	if first.Code != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200; body: %s", first.Code, first.Body.String())
+	}
+	third := httptest.NewRecorder()
+	handler.ServeHTTP(third, newFallbackTestRequest(t, clientCtx))
+	if third.Code != http.StatusOK {
+		t.Errorf("request after release status = %d, want 200; body: %s", third.Code, third.Body.String())
+	}
+	if got := backupCalls.Load(); got != 2 {
+		t.Errorf("backup calls after release = %d, want 2", got)
 	}
 }

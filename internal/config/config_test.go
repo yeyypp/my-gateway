@@ -10,13 +10,13 @@ import (
 
 func TestValidateConfig(t *testing.T) {
 	validUpstream := Upstream{
-		Name:    "mock-a",
-		BaseURL: "http://localhost:8091",
+		Name:         "mock-a",
+		BaseURL:      "http://localhost:8091",
+		DefaultModel: "real-model-a",
 	}
 	validModel := Model{
 		LogicModel: "model-a",
-		Upstream:   "mock-a",
-		RealModel:  "real-model-a",
+		Upstreams:  []string{"mock-a"},
 	}
 
 	tests := []struct {
@@ -90,15 +90,7 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: "logic model at index 0 has empty name",
 			config: Config{
 				Upstreams: []Upstream{validUpstream},
-				Models:    []Model{{Upstream: validUpstream.Name, RealModel: validModel.RealModel}},
-			},
-		},
-		{
-			name:    "empty real model",
-			wantErr: "real model at index 0 has empty name",
-			config: Config{
-				Upstreams: []Upstream{validUpstream},
-				Models:    []Model{{LogicModel: validModel.LogicModel, Upstream: validUpstream.Name}},
+				Models:    []Model{{Upstreams: []string{validUpstream.Name}}},
 			},
 		},
 		{
@@ -108,7 +100,7 @@ func TestValidateConfig(t *testing.T) {
 				Upstreams: []Upstream{validUpstream},
 				Models: []Model{
 					validModel,
-					{LogicModel: validModel.LogicModel, Upstream: validUpstream.Name, RealModel: "real-model-b"},
+					{LogicModel: validModel.LogicModel, Upstreams: []string{validUpstream.Name}},
 				},
 			},
 		},
@@ -117,7 +109,7 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: `model "model-a" has empty upstream`,
 			config: Config{
 				Upstreams: []Upstream{validUpstream},
-				Models:    []Model{{LogicModel: validModel.LogicModel, RealModel: validModel.RealModel}},
+				Models:    []Model{{LogicModel: validModel.LogicModel}},
 			},
 		},
 		{
@@ -125,7 +117,22 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: `model "model-a" references unknown upstream "mock-unknown"`,
 			config: Config{
 				Upstreams: []Upstream{validUpstream},
-				Models:    []Model{{LogicModel: validModel.LogicModel, Upstream: "mock-unknown", RealModel: validModel.RealModel}},
+				Models:    []Model{{LogicModel: validModel.LogicModel, Upstreams: []string{"mock-unknown"}}},
+			},
+		},
+		{
+			name:    "repeated model upstream",
+			wantErr: `model "model-a" repeats upstream "mock-a"`,
+			config: Config{
+				Upstreams: []Upstream{validUpstream},
+				Models:    []Model{{LogicModel: validModel.LogicModel, Upstreams: []string{"mock-a", "mock-a"}}},
+			},
+		},
+		{
+			name: "valid ordered upstreams",
+			config: Config{
+				Upstreams: []Upstream{validUpstream, {Name: "mock-b", BaseURL: "http://localhost:8092", DefaultModel: "real-model-b"}},
+				Models:    []Model{{LogicModel: validModel.LogicModel, Upstreams: []string{"mock-a", "mock-b"}}},
 			},
 		},
 		{
@@ -293,18 +300,20 @@ func TestLoad(t *testing.T) {
   - name: mock-a
     base_url: http://localhost:8091
     health_url: http://localhost:8091/readyz
+    default_model: real-model-a
 models:
   - logic_model: model-a
-    upstream: mock-a
-    real_model: real-model-a
+    upstreams:
+      - mock-a
 `,
 			wantConfig: Config{
 				Upstreams: []Upstream{{
-					Name:      "mock-a",
-					BaseURL:   "http://localhost:8091",
-					HealthURL: "http://localhost:8091/readyz",
+					Name:         "mock-a",
+					BaseURL:      "http://localhost:8091",
+					HealthURL:    "http://localhost:8091/readyz",
+					DefaultModel: "real-model-a",
 				}},
-				Models: []Model{{LogicModel: "model-a", Upstream: "mock-a", RealModel: "real-model-a"}},
+				Models: []Model{{LogicModel: "model-a", Upstreams: []string{"mock-a"}}},
 			},
 		},
 		{
@@ -317,10 +326,11 @@ models:
 			content: `upstreams:
   - name: mock-a
     base_url: http://localhost:8091
+    default_model: real-model-a
 models:
   - logic_model: model-a
-    upstream: mock-unknown
-    real_model: real-model-a
+    upstreams:
+      - mock-unknown
 `,
 			wantErr: `model "model-a" references unknown upstream "mock-unknown"`,
 		},
@@ -329,20 +339,22 @@ models:
 			content: `upstreams:
   - name: mock-a
     base_url: http://localhost:8091
+    default_model: real-model-a
     api_key_env: GATEWAY_TEST_API_KEY
 models:
   - logic_model: model-a
-    upstream: mock-a
-    real_model: real-model-a
+    upstreams:
+      - mock-a
 `,
 			wantConfig: Config{
 				Upstreams: []Upstream{{
-					Name:      "mock-a",
-					BaseURL:   "http://localhost:8091",
-					APIKeyEnv: "GATEWAY_TEST_API_KEY",
-					APIKey:    "sk-test-secret",
+					Name:         "mock-a",
+					BaseURL:      "http://localhost:8091",
+					APIKeyEnv:    "GATEWAY_TEST_API_KEY",
+					APIKey:       "sk-test-secret",
+					DefaultModel: "real-model-a",
 				}},
-				Models: []Model{{LogicModel: "model-a", Upstream: "mock-a", RealModel: "real-model-a"}},
+				Models: []Model{{LogicModel: "model-a", Upstreams: []string{"mock-a"}}},
 			},
 		},
 		{
@@ -351,19 +363,21 @@ models:
 			content: `upstreams:
   - name: mock-a
     base_url: http://localhost:8091
+    default_model: real-model-a
     api_key_env: GATEWAY_TEST_MISSING_KEY
 models:
   - logic_model: model-a
-    upstream: mock-a
-    real_model: real-model-a
+    upstreams:
+      - mock-a
 `,
 			wantConfig: Config{
 				Upstreams: []Upstream{{
-					Name:      "mock-a",
-					BaseURL:   "http://localhost:8091",
-					APIKeyEnv: "GATEWAY_TEST_MISSING_KEY",
+					Name:         "mock-a",
+					BaseURL:      "http://localhost:8091",
+					APIKeyEnv:    "GATEWAY_TEST_MISSING_KEY",
+					DefaultModel: "real-model-a",
 				}},
-				Models: []Model{{LogicModel: "model-a", Upstream: "mock-a", RealModel: "real-model-a"}},
+				Models: []Model{{LogicModel: "model-a", Upstreams: []string{"mock-a"}}},
 			},
 		},
 	}

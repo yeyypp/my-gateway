@@ -95,24 +95,31 @@ func buildRouter(config config.Config) (*router.ModelRouter, error) {
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
-	routes := make(map[string]http.Handler)
-loop:
-	for _, model := range config.Models {
-		for _, upstream := range config.Upstreams {
-			if model.Upstream == upstream.Name {
-				reverseProxy, err := proxy.BuildReverseProxy(proxy.RoutePolicy{
-					UpstreamURL:   upstream.BaseURL,
-					UpstreamModel: model.RealModel,
-				}, sharedTransport, upstream.APIKey)
-				if err != nil {
-					log.Error("build reverse proxy failed", zap.Error(err))
-					return nil, err
-				}
-				routes[model.LogicModel] = reverseProxy
-				continue loop
+	routes := make(map[string][]*proxy.Proxy)
+	upstreams := make(map[string]*proxy.Proxy)
+	for _, u := range config.Upstreams {
+		rP, err := proxy.BuildReverseProxy(proxy.RoutePolicy{
+			UpstreamName: u.Name,
+			UpstreamURL:  u.BaseURL,
+			DefaultModel: u.DefaultModel,
+		}, sharedTransport, u.APIKey)
+		if err != nil {
+			log.Error("build reverse proxy failed", zap.Error(err))
+			return nil, err
+		}
+		upstreams[u.Name] = rP
+	}
+
+	for _, m := range config.Models {
+		uList := make([]*proxy.Proxy, 0, len(m.Upstreams))
+		for _, uname := range m.Upstreams {
+			if u, ok := upstreams[uname]; ok {
+				uList = append(uList, u)
 			}
 		}
+		routes[m.LogicModel] = uList
 	}
+
 	return router.NewModelRouter(routes), nil
 }
 

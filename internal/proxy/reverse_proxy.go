@@ -9,8 +9,10 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/url"
+	"sync/atomic"
 
 	"shuai/gateway/internal/handlers"
 	"shuai/gateway/internal/log"
@@ -26,12 +28,17 @@ type Proxy struct {
 }
 
 type RoutePolicy struct {
-	UpstreamURL   string
-	UpstreamModel string
+	UpstreamName string
+	UpstreamURL  string
+	DefaultModel string
+}
+
+func (p *Proxy) GetUpstreamName() string {
+	return p.routePolicy.UpstreamName
 }
 
 func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport, apiKey string) (*Proxy, error) {
-	if routePolicy.UpstreamURL == "" || routePolicy.UpstreamModel == "" || transport == nil {
+	if routePolicy.UpstreamURL == "" || routePolicy.DefaultModel == "" || transport == nil {
 		return nil, errors.New("invalid policy or transport")
 	}
 	target, err := url.Parse(routePolicy.UpstreamURL)
@@ -73,7 +80,7 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport, apiKe
 			}
 			fields = append(fields,
 				zap.String("upstream", target.Host),
-				zap.String("model", routePolicy.UpstreamModel),
+				zap.String("model", routePolicy.DefaultModel),
 				zap.Int("status", resp.StatusCode),
 			)
 			if upstreamRequestID := resp.Header.Get(protocol.HeaderUpstreamRequestID); upstreamRequestID != "" {
@@ -90,12 +97,16 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport, apiKe
 
 		// 处理下游响应开始前的 RoundTrip / ModifyResponse 错误，不处理响应体复制阶段的错误。
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
+			rc, _ := req.Context().Value("rc").(*ReqContext)
+			rc.isSuccess = false
+			rc.err = err
+
 			var netErr net.Error
 			fields := append(middleware.GetReqIDFromCTX(req.Context()),
 				zap.String("method", req.Method),
 				zap.String("path", req.URL.Path),
 				zap.String("upstream", target.Host),
-				zap.String("model", routePolicy.UpstreamModel),
+				zap.String("model", routePolicy.DefaultModel),
 				zap.Error(err),
 			)
 			switch {
@@ -106,19 +117,9 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport, apiKe
 				errors.Is(err, context.DeadlineExceeded),
 				errors.As(err, &netErr) && netErr.Timeout():
 				log.Error("upstream request timed out", fields...)
-				handlers.SendError(w, protocol.APIError{
-					Message: "upstream timeout",
-					Type:    protocol.ErrorTypeGateway,
-					Code:    protocol.ErrorCodeUpstreamTimeout,
-				}, http.StatusGatewayTimeout)
 				return
 			default:
 				log.Error("upstream unavailable", fields...)
-				handlers.SendError(w, protocol.APIError{
-					Message: "upstream unavailable",
-					Type:    protocol.ErrorTypeGateway,
-					Code:    protocol.ErrorCodeUpstreamUnavailable,
-				}, http.StatusBadGateway)
 			}
 		},
 	}
@@ -141,7 +142,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstreamBody, err := changeModel(rawBody, p.routePolicy.UpstreamModel)
+	upstreamBody, err := changeModel(rawBody, p.routePolicy.DefaultModel)
 	if err != nil {
 		fields := append(middleware.GetReqIDFromCTX(r.Context()), zap.Error(err))
 		log.Error("rewrite upstream model failed", fields...)
@@ -156,23 +157,25 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	proxyReq := r.Clone(r.Context())
 	proxyReq.Body = io.NopCloser(bytes.NewReader(upstreamBody))
 	proxyReq.ContentLength = int64(len(upstreamBody))
+
 	p.proxy.ServeHTTP(w, proxyReq)
 }
 
 // changeModel replaces the top-level model field of an already validated Chat
 // Completions body and returns the bytes to forward. Every other field keeps the
 // bytes the client sent, so fields the Gateway does not model survive.
-func changeModel(rawBody []byte, realModel string) ([]byte, error) {
+func changeModel(rawBody []byte, targetModel string) ([]byte, error) {
 	var partialReq map[string]json.RawMessage
 	if err := json.Unmarshal(rawBody, &partialReq); err != nil {
 		return nil, err
 	}
 
-	encodedModel, err := json.Marshal(realModel)
+	encodedModel, err := json.Marshal(targetModel)
 	if err != nil {
 		return nil, err
 	}
 	partialReq["model"] = encodedModel
+
 	return json.Marshal(partialReq)
 }
 
@@ -204,4 +207,41 @@ func (s *sseTrackBody) Read(p []byte) (int, error) {
 
 func (s *sseTrackBody) Close() error {
 	return s.src.Close()
+}
+
+type ReqContext struct {
+	gotConn   atomic.Bool
+	isSuccess bool
+	err       error
+}
+
+func NewReqContext() *ReqContext {
+	return &ReqContext{
+		isSuccess: true,
+	}
+}
+
+func (rc *ReqContext) clientTrace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		GotConn: func(gci httptrace.GotConnInfo) {
+			rc.gotConn.Store(true)
+		},
+	}
+}
+
+func (rc *ReqContext) NeedRetry() bool {
+	return !rc.isSuccess && !rc.gotConn.Load()
+}
+
+func (rc *ReqContext) IsSuccess() bool {
+	return rc.isSuccess
+}
+
+func (rc *ReqContext) Err() error {
+	return rc.err
+}
+
+func AttachReqContext(rc *ReqContext, req *http.Request) *http.Request {
+	ctx := context.WithValue(req.Context(), "rc", rc)
+	return req.WithContext(httptrace.WithClientTrace(ctx, rc.clientTrace()))
 }

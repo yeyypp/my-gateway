@@ -85,8 +85,8 @@ func TestConcurrencyRequestLifecycle(t *testing.T) {
 				}))
 				t.Cleanup(upstream.Close)
 				router, err := buildRouter(config.Config{
-					Models:    []config.Model{{LogicModel: "logic-model", Upstream: "test", RealModel: "real-model"}},
-					Upstreams: []config.Upstream{{Name: "test", BaseURL: upstream.URL}},
+					Models:    []config.Model{{LogicModel: "logic-model", Upstreams: []string{"test"}}},
+					Upstreams: []config.Upstream{{Name: "test", BaseURL: upstream.URL, DefaultModel: "real-model"}},
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -211,7 +211,7 @@ func TestConcurrencyRequestLifecycle(t *testing.T) {
 								}
 								want := http.StatusOK
 								if ending == "upstream failure" {
-									want = http.StatusBadGateway
+									want = http.StatusServiceUnavailable
 								}
 								if result.resp.StatusCode != want {
 									t.Errorf("expected status %d, got %d", want, result.resp.StatusCode)
