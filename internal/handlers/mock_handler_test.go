@@ -11,6 +11,8 @@ import (
 
 	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/protocol"
+
+	"github.com/openai/openai-go/v3"
 )
 
 func TestRejectsInvalidJSON(t *testing.T) {
@@ -84,7 +86,7 @@ func TestNormalRequest(t *testing.T) {
 		t.Fatalf("expected Content-Type %q, got %q", "application/json", got)
 	}
 
-	var chatResp protocol.ChatCompletionResponse
+	var chatResp openai.ChatCompletion
 	if err := json.NewDecoder(result.Body).Decode(&chatResp); err != nil {
 		t.Fatalf("failed to decode chat response: %v", err)
 	}

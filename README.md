@@ -45,13 +45,17 @@ make run-gateway
 
 请求必须携带 `Authorization: Bearer <调用方 Key>`。`model` 是逻辑模型；`messages` 不能为空，且只支持文本 `role`/`content`；`stream=true` 要求上游支持 OpenAI 兼容 SSE。网关只改写顶层 `model` 字段，其余字段按客户端发送的 JSON 原样转发。
 
-成功返回最小化的 Chat Completions 对象；网关自身产生的错误统一使用如下信封：
+成功 JSON 与 SSE 原样透传，保留上游真实模型名和扩展字段。网关错误及上游 HTTP 4xx/5xx 统一使用 OpenAI 兼容错误信封：
 
 ```json
-{"error":{"message":"...","type":"...","param":"...","code":"..."}}
+{"error":{"message":"Rate limit exceeded.","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}
 ```
 
-调用凭证缺失或无效返回 401，超过调用方频率限制返回 429；无效 JSON、取值不支持或模型未知返回 400；请求体过大返回 413；上游不可达返回 502；网关或网络超时返回 504。上游若返回明确的 HTTP 响应，状态码与响应体原样透传。
+调用凭证缺失或无效返回 401（`authentication_error`）；频率和并发拒绝均返回 429（`rate_limit_error`），错误码分别为 `rate_limit_exceeded`、`concurrency_limit_exceeded`。参数错误或模型未知返回 400，请求体过大返回 413，均为 `invalid_request_error`；内部错误返回 500，候选全部失败返回 503，上游超时返回 504，均为 `server_error`。权限拒绝使用 403 / `permission_error`。`/v1` 下未知路径返回 404，聊天端点错误方法返回 405 和 `Allow: POST`；API 错误均携带网关 Request ID。无关联参数或错误代码时，对应字段为 JSON `null`。
+
+上游 HTTP 错误保留状态码及有效标准错误字段；文本、HTML、空响应、读取失败和超过 64 KiB 的错误体转换为通用错误，不暴露原始内容。归一化支持 gzip，保留 `Retry-After` 和上游 Request ID。收到 HTTP 错误不会触发主备切换；SSE 开始后的中断不会追加 JSON 或伪造 `[DONE]`。
+
+使用官方 Go SDK `github.com/openai/openai-go/v3` 解析客户端响应并进行兼容验收；服务端错误与 Mock 输出使用必要的自定义类型，以准确输出 `null` 和可选字段。
 
 ## 路由配置
 
@@ -104,7 +108,13 @@ curl -N -i http://localhost:8080/v1/chat/completions \
   -d '{"model":"local","messages":[{"role":"user","content":"用一句话介绍 Go"}],"stream":true}'
 ```
 
-要使用 Mock，可先手动启动对应进程，再把模型换成 `model-a` 或 `model-b`。未知模型返回 400 和统一错误信封。
+要使用 Mock，可先手动启动对应进程，再把模型换成 `model-a` 或 `model-b`；普通和流式请求均可用。Mock SSE 依次输出角色块、内容块、结束块和 `data: [DONE]`，每块及时 flush，同一流的 ID、创建时间及真实模型一致。每次请求生成新的响应 ID；Mock 省略未知的 token 用量，不伪造零值。
+
+`study-assistant` 从 `GATEWAY_API_KEY` 读取调用凭证，使用官方类型解析响应，识别流中错误并检查 `[DONE]`：
+
+```sh
+GATEWAY_API_KEY="$LOCAL_CLIENT_KEY_A" go run ./cmd/study-assistant analyze README.md --model model-a --stream
+```
 
 ## 请求关联
 

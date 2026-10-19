@@ -45,13 +45,17 @@ Minimal `POST /v1/chat/completions` request:
 
 Requests must include `Authorization: Bearer <caller key>`. `model` is the logical model; `messages` must be non-empty and supports only text `role`/`content`; `stream=true` requires an upstream that supports OpenAI-compatible SSE. The Gateway rewrites only the top-level `model` field and forwards every other field with the JSON value the client sent.
 
-Success returns a minimal Chat Completions object. Gateway-generated errors use a stable envelope:
+Successful JSON and SSE responses pass through unchanged, including the real upstream model and extension fields. Gateway errors and upstream HTTP 4xx/5xx responses use an OpenAI-compatible envelope:
 
 ```json
-{"error":{"message":"...","type":"...","param":"...","code":"..."}}
+{"error":{"message":"Rate limit exceeded.","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}
 ```
 
-A missing or invalid caller credential returns 401, and exceeding the caller's request-rate limit returns 429. Invalid JSON, unsupported values, or unknown models return 400; an oversized body returns 413; an unreachable upstream returns 502; a Gateway or network timeout returns 504. An explicit upstream HTTP response passes through with its status and body.
+Missing or invalid credentials return 401 (`authentication_error`). Rate and concurrency rejections return 429 (`rate_limit_error`), with codes `rate_limit_exceeded` and `concurrency_limit_exceeded`. Invalid requests or unknown models return 400; oversized requests return 413 (`invalid_request_error`). Internal failures return 500, exhausted upstreams 503, and upstream timeouts 504 (`server_error`). Permission rejections use 403 / `permission_error`. Unknown paths under `/v1` return 404; unsupported chat methods return 405 with `Allow: POST`. API errors carry a Gateway Request ID. Absent `param` and `code` fields are encoded as JSON `null`.
+
+Upstream HTTP errors retain their status and valid standard error fields. Text, HTML, empty, unreadable, or oversized error bodies become generic errors without exposing raw diagnostics. Error-body inspection is limited to 64 KiB, supports gzip, and retains `Retry-After` and upstream request IDs. HTTP errors do not trigger fallback. Interrupted SSE responses do not append JSON or synthesize `[DONE]`.
+
+The official `github.com/openai/openai-go/v3` SDK supplies client decoding types and compatibility tests. Small server output types preserve correct null and optional-field encoding.
 
 ## Routing
 
@@ -104,7 +108,13 @@ curl -N -i http://localhost:8080/v1/chat/completions \
   -d '{"model":"local","messages":[{"role":"user","content":"用一句话介绍 Go"}],"stream":true}'
 ```
 
-To use a mock, start its process manually and switch the model to `model-a` or `model-b`. Unknown models return 400 with the common error envelope.
+To use a mock, start its process manually and switch the model to `model-a` or `model-b`. Both normal and streaming requests work. Mock SSE sends a role chunk, content chunk, finish chunk, and `data: [DONE]`, flushing each event. Chunks share an ID, creation time, and real model; each request receives a fresh response ID. Unknown token usage is omitted instead of reporting invented zeros.
+
+`study-assistant` reads caller credentials from `GATEWAY_API_KEY`, decodes responses with official SDK types, reports stream errors, and checks for `[DONE]`:
+
+```sh
+GATEWAY_API_KEY="$LOCAL_CLIENT_KEY_A" go run ./cmd/study-assistant analyze README.md --model model-a --stream
+```
 
 ## Correlation
 

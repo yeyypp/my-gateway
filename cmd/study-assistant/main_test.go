@@ -62,11 +62,11 @@ func TestRunAnalyzeSendsRequestAndPrintsResponse(t *testing.T) {
 			}
 		}
 
-		chatResp := protocol.ChatCompletionResponse{
+		chatResp := protocol.Completion{
 			ID:     "test-id",
 			Object: "chat.completion",
 			Model:  "model-a",
-			Choices: []protocol.Choice{
+			Choices: []protocol.CompletionChoice{
 				{
 					Index: 0,
 					Message: protocol.Message{
@@ -203,8 +203,8 @@ func TestRunAnalyzeReturnsGatewayRequestIDOutputError(t *testing.T) {
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Gateway-Request-ID", "gateway-output-error-123")
-		if err := json.NewEncoder(w).Encode(protocol.ChatCompletionResponse{
-			Choices: []protocol.Choice{{
+		if err := json.NewEncoder(w).Encode(protocol.Completion{
+			Choices: []protocol.CompletionChoice{{
 				Message: protocol.Message{Role: "assistant", Content: "response"},
 			}},
 		}); err != nil {

@@ -18,6 +18,7 @@ import (
 
 	"shuai/gateway/internal/protocol"
 
+	"github.com/openai/openai-go/v3"
 	"github.com/spf13/cobra"
 )
 
@@ -110,6 +111,9 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if apiKey := os.Getenv("GATEWAY_API_KEY"); apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 
 	requestStarted := time.Now()
 	resp, err := client.Do(req)
@@ -132,15 +136,14 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 			return fmt.Errorf("gateway request failed: http_status=%s, read error response: %w", resp.Status, err)
 		}
 
-		var errResp protocol.ErrorResponse
-		if err := json.Unmarshal(body, &errResp); err == nil && hasAPIError(errResp.Error) {
+		if apiErr, ok := decodeAPIError(body); ok {
 			return fmt.Errorf(
 				"gateway request failed: http_status=%s, type=%s, code=%s, param=%q, message=%q",
 				resp.Status,
-				errResp.Error.Type,
-				errResp.Error.Code,
-				errResp.Error.Param,
-				errResp.Error.Message,
+				apiErr.Type,
+				apiErr.Code,
+				apiErr.Param,
+				apiErr.Message,
 			)
 		}
 
@@ -151,12 +154,12 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 		return fmt.Errorf("gateway request failed: http_status=%s, response=%q", resp.Status, responseText)
 	} else {
 		if !isStream {
-			var chatResp protocol.ChatCompletionResponse
+			var chatResp openai.ChatCompletion
 			if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
 				return err
 			}
 			if len(chatResp.Choices) == 0 {
-				return errors.New("")
+				return errors.New("gateway response contains no choices")
 			}
 			if _, err := out.Write([]byte(chatResp.Choices[0].Message.Content)); err != nil {
 				return err
@@ -182,8 +185,15 @@ func runAnalyze(ctx context.Context, client *http.Client, gatewayURL, filePath, 
 	return nil
 }
 
-func hasAPIError(apiErr protocol.APIError) bool {
-	return apiErr.Message != "" || apiErr.Type != "" || apiErr.Code != "" || apiErr.Param != ""
+func decodeAPIError(body []byte) (*openai.Error, bool) {
+	var envelope struct {
+		Error *openai.Error `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Error == nil {
+		return nil, false
+	}
+	apiErr := envelope.Error
+	return apiErr, apiErr.Message != "" || apiErr.Type != "" || apiErr.Code != "" || apiErr.Param != ""
 }
 
 func parseStream(body io.Reader, out io.Writer, ttftTime time.Time) error {
@@ -212,7 +222,10 @@ func parseStream(body io.Reader, out io.Writer, ttftTime time.Time) error {
 			return nil
 		}
 
-		var chatResp protocol.ChatCompletionStreamResponse
+		if apiErr, ok := decodeAPIError([]byte(data)); ok {
+			return fmt.Errorf("gateway stream failed: type=%s, code=%s, param=%q, message=%q", apiErr.Type, apiErr.Code, apiErr.Param, apiErr.Message)
+		}
+		var chatResp openai.ChatCompletionChunk
 		if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
 			return fmt.Errorf("decode stream chunk: %w", err)
 		}
@@ -249,17 +262,11 @@ func parseStream(body io.Reader, out io.Writer, ttftTime time.Time) error {
 		}
 
 		before, after, found := strings.Cut(line, ":")
-		if !found || strings.TrimSpace(before) != "data" {
+		if !found || before != "data" {
 			continue
 		}
 
-		// DONE也是一个完整SSE事件，应该在process中处理
-		// if strings.TrimSpace(after) == "[DONE]" {
-		// 	done = true
-		// 	break
-		// }
-
-		curDataLine = append(curDataLine, strings.TrimSpace(after))
+		curDataLine = append(curDataLine, strings.TrimPrefix(after, " "))
 	}
 
 	if err := scanner.Err(); err != nil {

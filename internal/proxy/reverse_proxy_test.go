@@ -251,8 +251,8 @@ func TestProxyRejectsRequestWithoutValidatedBody(t *testing.T) {
 	if err := json.NewDecoder(result.Body).Decode(&respJSON); err != nil {
 		t.Fatalf("failed to decode response body: %v", err)
 	}
-	if respJSON.Error.Type != protocol.ErrorTypeGateway {
-		t.Fatalf("expected error type %q, got %q", protocol.ErrorTypeGateway, respJSON.Error.Type)
+	if respJSON.Error.Type != protocol.ErrorTypeServer {
+		t.Fatalf("expected error type %q, got %q", protocol.ErrorTypeServer, respJSON.Error.Type)
 	}
 	if respJSON.Error.Code != protocol.ErrorCodeRequestEncodingFailed {
 		t.Fatalf("expected error code %q, got %q", protocol.ErrorCodeRequestEncodingFailed, respJSON.Error.Code)

@@ -1,7 +1,7 @@
 package protocol
 
-// ChatCompletionRequest is the minimal Chat Completions request supported by
-// the gateway in W2.
+// ChatCompletionRequest is the gateway's routing/validation view. Forwarding
+// uses the original JSON body so unmodeled fields survive.
 type ChatCompletionRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
@@ -13,43 +13,39 @@ type Message struct {
 	Content string `json:"content"`
 }
 
-type ChatCompletionResponse struct {
-	ID      string   `json:"id"`
-	Object  string   `json:"object"`
-	Created int64    `json:"created"`
-	Model   string   `json:"model"`
-	Choices []Choice `json:"choices"`
-	Usage   Usage    `json:"usage"`
+// Completion and CompletionChunk are minimal server output types for the Mock.
+// Clients should decode responses using the official OpenAI SDK.
+type Completion struct {
+	ID      string             `json:"id"`
+	Object  string             `json:"object"`
+	Created int64              `json:"created"`
+	Model   string             `json:"model"`
+	Choices []CompletionChoice `json:"choices"`
 }
 
-type Choice struct {
-	Index        int     `json:"index"`
-	Message      Message `json:"message"`
-	FinishReason string  `json:"finish_reason"`
+type CompletionChoice struct {
+	Index        int       `json:"index"`
+	Message      Message   `json:"message"`
+	FinishReason string    `json:"finish_reason"`
+	Logprobs     *struct{} `json:"logprobs"`
 }
 
-type ChatCompletionStreamResponse struct {
+type CompletionChunk struct {
 	ID      string        `json:"id"`
 	Object  string        `json:"object"`
 	Created int64         `json:"created"`
 	Model   string        `json:"model"`
-	Choices []ChoiceChunk `json:"choices"`
-	Usage   Usage         `json:"usage"`
+	Choices []ChunkChoice `json:"choices"`
 }
 
-type ChoiceChunk struct {
-	Index        int     `json:"index"`
-	Delta        Delta   `json:"delta"`
-	FinishReason *string `json:"finish_reason"`
+type ChunkChoice struct {
+	Index        int        `json:"index"`
+	Delta        ChunkDelta `json:"delta"`
+	FinishReason *string    `json:"finish_reason"`
+	Logprobs     *struct{}  `json:"logprobs"`
 }
 
-type Delta struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+type ChunkDelta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
 }

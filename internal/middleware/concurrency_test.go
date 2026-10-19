@@ -90,7 +90,7 @@ func TestConcurrencyReleaseAfterDownstreamRejection(t *testing.T) {
 					t.Fatalf("expected %d, got %d", want, w.Code)
 				}
 				// A rate rejection must really reach RateLimit, not be masked by a leaked concurrency slot.
-				if reason == "rate limit" && !strings.Contains(w.Body.String(), `"code":"rate_limit"`) {
+				if reason == "rate limit" && !strings.Contains(w.Body.String(), `"code":"rate_limit_exceeded"`) {
 					t.Fatalf("unexpected rejection: %s", w.Body.String())
 				}
 			}

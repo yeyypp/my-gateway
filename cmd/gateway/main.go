@@ -10,6 +10,7 @@ import (
 	"shuai/gateway/internal/handlers"
 	"shuai/gateway/internal/log"
 	"shuai/gateway/internal/middleware"
+	"shuai/gateway/internal/protocol"
 	"shuai/gateway/internal/proxy"
 	"shuai/gateway/internal/router"
 
@@ -68,23 +69,38 @@ func runGateway(config config.Config) error {
 		WriteTimeout: 60 * time.Second, // 网关给客户端写响应的超时时间，会在收到请求header时重置
 		IdleTimeout:  30 * time.Second,
 	}
-	mux := http.NewServeMux()
-	h := middleware.Chain(
-		middleware.SetGatewayRequestID,
-		middleware.LogRequest,
+	server.Handler = newGatewayHandler(config, router)
+	log.Info("gateway server starting", zap.String("addr", server.Addr))
+	return server.ListenAndServe()
+}
+
+func newGatewayHandler(cfg config.Config, modelRouter http.Handler) http.Handler {
+	chat := middleware.Chain(
 		middleware.Authorization,
 		middleware.ConcurrencyLimit,
 		middleware.RateLimit,
 		middleware.ValidateJSONRequest,
 		middleware.RequestTimeout(30*time.Second),
-	)
-	mux.Handle("POST /v1/chat/completions", h(router))
+	)(modelRouter)
+	api := middleware.Chain(middleware.SetGatewayRequestID, middleware.LogRequest)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			handlers.SendError(w, protocol.ErrorForStatus(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			handlers.SendError(w, protocol.ErrorForStatus(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			return
+		}
+		chat.ServeHTTP(w, r)
+	}))
+	mux := http.NewServeMux()
+	mux.Handle("/v1", api)
+	mux.Handle("/v1/", api)
 	mux.HandleFunc("GET /healthz", HealthCheck)
-	readyCheck := handlers.NewReadyCheck(config.Upstreams)
+	readyCheck := handlers.NewReadyCheck(cfg.Upstreams)
 	mux.HandleFunc("GET /readyz", readyCheck.CheckUpstreams)
-	server.Handler = mux
-	log.Info("gateway server starting", zap.String("addr", server.Addr))
-	return server.ListenAndServe()
+	return mux
 }
 
 func buildRouter(config config.Config) (*router.ModelRouter, error) {

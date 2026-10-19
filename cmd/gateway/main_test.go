@@ -18,6 +18,8 @@ import (
 	"shuai/gateway/internal/config"
 	"shuai/gateway/internal/middleware"
 	"shuai/gateway/internal/protocol"
+
+	"github.com/openai/openai-go/v3"
 )
 
 func newStreamingGatewayHandler(t *testing.T, upstreamURL string, requestTimeout time.Duration) http.Handler {
@@ -119,10 +121,10 @@ func writeSSEData(w http.ResponseWriter, data string) error {
 }
 
 func writeSSEContent(w http.ResponseWriter, content string) error {
-	resp := protocol.ChatCompletionStreamResponse{
-		Choices: []protocol.ChoiceChunk{
+	resp := protocol.CompletionChunk{
+		Choices: []protocol.ChunkChoice{
 			{
-				Delta: protocol.Delta{
+				Delta: protocol.ChunkDelta{
 					Content: content,
 				},
 			},
@@ -154,7 +156,7 @@ func readSSEEvent(t *testing.T, scanner *bufio.Scanner) (content string, done bo
 			return "", true
 		}
 
-		var chunk protocol.ChatCompletionStreamResponse
+		var chunk openai.ChatCompletionChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			t.Fatalf("decode stream chunk: %v", err)
 		}
@@ -829,7 +831,7 @@ func TestFallbackAllUpstreamsFail(t *testing.T) {
 	if err := json.NewDecoder(result.Body).Decode(&response); err != nil {
 		t.Fatalf("decode gateway error: %v", err)
 	}
-	if response.Error.Code != protocol.ErrorCodeUpstreamUnavailable {
+	if response.Error.Code != protocol.ErrorCodeUpstreamUnavailable || response.Error.Type != protocol.ErrorTypeServer || !bytes.Contains(recorder.Body.Bytes(), []byte(`"param":null`)) {
 		t.Errorf("error code = %q, want %q", response.Error.Code, protocol.ErrorCodeUpstreamUnavailable)
 	}
 	if got := backupCalls.Load(); got != 1 {
@@ -859,8 +861,12 @@ func TestFallbackDoesNotSwitchOnUpstream503(t *testing.T) {
 	if result.StatusCode != http.StatusServiceUnavailable || result.Header.Get("X-Selected-Upstream") != "primary" {
 		t.Fatalf("status = %d, selected upstream = %q; want provider 503", result.StatusCode, result.Header.Get("X-Selected-Upstream"))
 	}
-	if got := recorder.Body.String(); got != "provider unavailable" {
-		t.Errorf("response body = %q, want provider error", got)
+	var apiError protocol.ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &apiError); err != nil {
+		t.Fatal(err)
+	}
+	if apiError.Error.Code != protocol.ErrorCodeUpstreamHTTP || apiError.Error.Type != protocol.ErrorTypeServer {
+		t.Errorf("unexpected normalized provider error: %+v", apiError)
 	}
 	if got := backupCalls.Load(); got != 0 {
 		t.Errorf("backup calls = %d, want 0", got)
@@ -899,7 +905,7 @@ func TestFallbackDoesNotSwitchOnUpstreamTimeout(t *testing.T) {
 	if err := json.NewDecoder(result.Body).Decode(&response); err != nil {
 		t.Fatalf("decode gateway timeout: %v", err)
 	}
-	if response.Error.Code != protocol.ErrorCodeUpstreamTimeout {
+	if response.Error.Code != protocol.ErrorCodeUpstreamTimeout || response.Error.Type != protocol.ErrorTypeServer || !bytes.Contains(recorder.Body.Bytes(), []byte(`"param":null`)) {
 		t.Errorf("error code = %q, want %q", response.Error.Code, protocol.ErrorCodeUpstreamTimeout)
 	}
 	if got := backupCalls.Load(); got != 0 {

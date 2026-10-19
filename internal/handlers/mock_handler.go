@@ -38,6 +38,10 @@ func (w *mockResponseStatusWriter) Write(content []byte) (int, error) {
 	return w.ResponseWriter.Write(content)
 }
 
+func (w *mockResponseStatusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func NewMockAPIHandler(name, model string) *MockAPIHandler {
 	return &MockAPIHandler{
 		Name:  name,
@@ -74,30 +78,93 @@ func (m *MockAPIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var chatCompletReq protocol.ChatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&chatCompletReq); err != nil {
 		SendError(w, protocol.APIError{
-			Message: err.Error(),
+			Message: "Invalid JSON request body.",
 			Type:    protocol.ErrorTypeInvalidRequest,
 			Code:    protocol.ErrorCodeInvalidJSON,
 		}, http.StatusBadRequest)
 		return
 	}
 
-	resp := protocol.ChatCompletionResponse{
-		ID:      "test id",
+	id, created := "chatcmpl-"+uuid.New().String(), time.Now().Unix()
+	content := fmt.Sprintf("response from %s", m.Name)
+	if chatCompletReq.Stream {
+		m.sendStream(w, r, id, created, content)
+		return
+	}
+	resp := protocol.Completion{
+		ID:      id,
 		Object:  "chat.completion",
-		Created: time.Now().Unix(),
+		Created: created,
 		Model:   m.Model,
-		Choices: []protocol.Choice{
+		Choices: []protocol.CompletionChoice{
 			{
 				Index: 0,
 				Message: protocol.Message{
 					Role:    "assistant",
-					Content: fmt.Sprintf("response from %s", m.Name),
+					Content: content,
 				},
 				FinishReason: "stop",
 			},
 		},
 	}
 	SendJSON(w, resp)
+}
+
+func (m *MockAPIHandler) sendStream(w http.ResponseWriter, r *http.Request, id string, created int64, content string) {
+	controller := http.NewResponseController(w)
+	// Check support before committing the SSE response.
+	underlying := w
+	for {
+		if _, ok := underlying.(http.Flusher); ok {
+			break
+		}
+		if wrapped, ok := underlying.(interface{ Unwrap() http.ResponseWriter }); ok {
+			underlying = wrapped.Unwrap()
+			continue
+		}
+		SendError(w, protocol.ErrorForStatus(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	stop := "stop"
+	choices := []protocol.ChunkChoice{
+		{Delta: protocol.ChunkDelta{Role: "assistant"}},
+		{Delta: protocol.ChunkDelta{Content: content}},
+		{Delta: protocol.ChunkDelta{}, FinishReason: &stop},
+	}
+	for _, choice := range choices {
+		if r.Context().Err() != nil {
+			return
+		}
+		chunk := protocol.CompletionChunk{
+			ID: id, Object: "chat.completion.chunk", Created: created, Model: m.Model,
+			Choices: []protocol.ChunkChoice{choice},
+		}
+		data, err := json.Marshal(chunk)
+		if err != nil {
+			log.Error("encode mock stream chunk failed", zap.Error(err))
+			return
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			log.Error("write mock stream chunk failed", zap.Error(err))
+			return
+		}
+		if err := controller.Flush(); err != nil {
+			log.Error("flush mock stream chunk failed", zap.Error(err))
+			return
+		}
+	}
+	if r.Context().Err() != nil {
+		return
+	}
+	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+		log.Error("write mock stream completion failed", zap.Error(err))
+		return
+	}
+	if err := controller.Flush(); err != nil {
+		log.Error("flush mock stream completion failed", zap.Error(err))
+	}
 }
 
 func (m *MockAPIHandler) CheckHealth(w http.ResponseWriter, r *http.Request) {

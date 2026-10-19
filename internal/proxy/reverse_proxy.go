@@ -65,6 +65,9 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport, apiKe
 		ModifyResponse: func(resp *http.Response) error {
 			// 此处删除的是从upstream收到响应中的id，不影响middleware在外层设定的id
 			resp.Header.Del(protocol.HeaderGatewayRequestID)
+			if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode <= 599 {
+				normalizeErrorResponse(resp)
+			}
 
 			fields := make([]zap.Field, 0, 9)
 			if resp.Request != nil {
@@ -98,8 +101,10 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport, apiKe
 		// 处理下游响应开始前的 RoundTrip / ModifyResponse 错误，不处理响应体复制阶段的错误。
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
 			rc, _ := req.Context().Value("rc").(*ReqContext)
-			rc.isSuccess = false
-			rc.err = err
+			if rc != nil {
+				rc.isSuccess = false
+				rc.err = err
+			}
 
 			var netErr net.Error
 			fields := append(middleware.GetReqIDFromCTX(req.Context()),
@@ -117,9 +122,15 @@ func BuildReverseProxy(routePolicy RoutePolicy, transport *http.Transport, apiKe
 				errors.Is(err, context.DeadlineExceeded),
 				errors.As(err, &netErr) && netErr.Timeout():
 				log.Error("upstream request timed out", fields...)
+				if rc == nil {
+					handlers.SendError(w, protocol.NewError(protocol.ErrorTypeServer, protocol.ErrorCodeUpstreamTimeout, "Upstream request timed out.", ""), http.StatusGatewayTimeout)
+				}
 				return
 			default:
 				log.Error("upstream unavailable", fields...)
+				if rc == nil {
+					handlers.SendError(w, protocol.NewError(protocol.ErrorTypeServer, protocol.ErrorCodeUpstreamUnavailable, "Upstream unavailable.", ""), http.StatusServiceUnavailable)
+				}
 			}
 		},
 	}
@@ -136,7 +147,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Error("validated request body missing from context", middleware.GetReqIDFromCTX(r.Context())...)
 		handlers.SendError(w, protocol.APIError{
 			Message: "validated request body missing",
-			Type:    protocol.ErrorTypeGateway,
+			Type:    protocol.ErrorTypeServer,
 			Code:    protocol.ErrorCodeRequestEncodingFailed,
 		}, http.StatusInternalServerError)
 		return
@@ -148,7 +159,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Error("rewrite upstream model failed", fields...)
 		handlers.SendError(w, protocol.APIError{
 			Message: "rewrite upstream model failed",
-			Type:    protocol.ErrorTypeGateway,
+			Type:    protocol.ErrorTypeServer,
 			Code:    protocol.ErrorCodeRequestEncodingFailed,
 		}, http.StatusInternalServerError)
 		return

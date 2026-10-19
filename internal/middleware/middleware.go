@@ -188,7 +188,7 @@ func Authorization(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bear := r.Header.Get("Authorization")
 		if len(bear) == 0 || !strings.HasPrefix(bear, "Bearer ") {
-			handlers.SendError(w, protocol.APIError{}, http.StatusUnauthorized)
+			handlers.SendError(w, protocol.NewError(protocol.ErrorTypeAuthentication, protocol.ErrorCodeInvalidAPIKey, "A valid Bearer API key is required.", ""), http.StatusUnauthorized)
 			return
 		}
 
@@ -201,7 +201,7 @@ func Authorization(next http.Handler) http.Handler {
 			clientID = "client-B"
 		}
 		if len(clientID) == 0 {
-			handlers.SendError(w, protocol.APIError{}, http.StatusUnauthorized)
+			handlers.SendError(w, protocol.NewError(protocol.ErrorTypeAuthentication, protocol.ErrorCodeInvalidAPIKey, "Invalid API key.", ""), http.StatusUnauthorized)
 			return
 		}
 
@@ -222,7 +222,7 @@ func rateLimitWithFactory(newLimiter func() ratelimit.Limiter) Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			clientID := GetClientIDFromCTX(r.Context())
 			if len(clientID) == 0 {
-				handlers.SendError(w, protocol.APIError{}, http.StatusForbidden)
+				handlers.SendError(w, protocol.ErrorForStatus(http.StatusForbidden), http.StatusForbidden)
 				return
 			}
 
@@ -233,8 +233,8 @@ func rateLimitWithFactory(newLimiter func() ratelimit.Limiter) Middleware {
 			limiter := v.(ratelimit.Limiter)
 			if allowed := limiter.Allow(1); !allowed {
 				handlers.SendError(w, protocol.APIError{
-					Message: "rate limit",
-					Type:    protocol.ErrorTypeGateway,
+					Message: "Rate limit exceeded.",
+					Type:    protocol.ErrorTypeRateLimit,
 					Code:    protocol.ErrorCodeRateLimit,
 				}, http.StatusTooManyRequests)
 				return
@@ -255,12 +255,12 @@ func ConcurrencyLimitWithLimits(total, perClient int32) Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			clientID := GetClientIDFromCTX(r.Context())
 			if len(clientID) == 0 {
-				handlers.SendError(w, protocol.APIError{}, http.StatusUnauthorized)
+				handlers.SendError(w, protocol.ErrorForStatus(http.StatusUnauthorized), http.StatusUnauthorized)
 				return
 			}
 
 			if !cl.TryAcquire(clientID) {
-				handlers.SendError(w, protocol.APIError{}, http.StatusTooManyRequests)
+				handlers.SendError(w, protocol.NewError(protocol.ErrorTypeRateLimit, protocol.ErrorCodeConcurrencyLimit, "Concurrency limit exceeded.", ""), http.StatusTooManyRequests)
 				return
 			}
 			// 必须放在这里，不能放在serverhttp后，防止函数中panic，无法执行release

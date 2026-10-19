@@ -79,19 +79,17 @@ func (m *ModelRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				errors.As(rc.Err(), &netErr) && netErr.Timeout():
 				log.Error("upstream request timed out")
 
-				// 暂时先这么写，后续调整为适配OpenAI的错误响应
 				handlers.SendError(w, protocol.APIError{
 					Message: "upstream timeout",
-					Type:    protocol.ErrorTypeGateway,
+					Type:    protocol.ErrorTypeServer,
 					Code:    protocol.ErrorCodeUpstreamTimeout,
 				}, http.StatusGatewayTimeout)
 				return
 			default:
 				log.Error("upstream unavailable")
-				// 暂时先这么写，后续调整为适配OpenAI的错误响应
 				handlers.SendError(w, protocol.APIError{
 					Message: "upstream unavailable",
-					Type:    protocol.ErrorTypeGateway,
+					Type:    protocol.ErrorTypeServer,
 					Code:    protocol.ErrorCodeUpstreamUnavailable,
 				}, http.StatusServiceUnavailable)
 				return
