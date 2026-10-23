@@ -8,7 +8,7 @@ upstreams:
     default_model: deepseek-v4-flash
 
 models:
-  - logic_model: normal
+  - logic_model: local 
     upstreams:
               - ollama
               - deepseek
